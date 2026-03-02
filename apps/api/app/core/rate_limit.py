@@ -4,11 +4,12 @@ from collections import defaultdict
 from time import time
 from typing import Literal
 
-RouteKey = Literal["ask", "documents/ingest", "documents/presign", "documents/confirm"]
+RouteKey = Literal["ask", "retrieve", "documents/ingest", "documents/presign", "documents/confirm"]
 
 # (limit, window_seconds)
 RATE_LIMITS: dict[str, tuple[int, int]] = {
     "ask": (10, 3600),  # 10 per hour
+    "retrieve": (60, 3600),  # 60 per hour
     "documents/ingest": (3, 86400),  # 3 per day
     "documents/presign": (10, 86400),  # 10 per day
     "documents/confirm": (20, 86400),  # 20 per day
@@ -19,6 +20,8 @@ def _path_to_route(path: str) -> RouteKey | None:
     path = path.rstrip("/") or "/"
     if path == "/ask":
         return "ask"
+    if path == "/retrieve":
+        return "retrieve"
     if path == "/documents/presign":
         return "documents/presign"
     if path == "/documents/confirm":

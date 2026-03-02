@@ -3,6 +3,7 @@ from datetime import datetime
 from enum import Enum
 
 import sqlalchemy as sa
+from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy import ForeignKey, text
 from sqlalchemy.dialects.postgresql import UUID
 from sqlalchemy.orm import Mapped, mapped_column
@@ -41,6 +42,7 @@ class Document(Base):
     )
     page_count: Mapped[int | None] = mapped_column(nullable=True)
     error_message: Mapped[str | None] = mapped_column(nullable=True)
+    jd_extraction_json: Mapped[dict | None] = mapped_column(JSONB(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"),
         nullable=False,

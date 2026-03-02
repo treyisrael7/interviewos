@@ -1,13 +1,21 @@
-import asyncio
+import logging
 
 from fastapi import FastAPI
+
+# Ensure ingestion/chunking logs appear in Docker console (propagate=False avoids duplicates)
+_handler = logging.StreamHandler()
+_handler.setFormatter(logging.Formatter("%(levelname)s:     %(name)s - %(message)s"))
+_app_log = logging.getLogger("app.services")
+_app_log.setLevel(logging.INFO)
+_app_log.addHandler(_handler)
+_app_log.propagate = False
 from sqlalchemy import text
 from sqlalchemy.ext.asyncio import create_async_engine
 from starlette.responses import JSONResponse
 
 from app.core.config import settings
 from app.core.middleware import DemoGateMiddleware, RateLimitMiddleware
-from app.routers import ask, documents
+from app.routers import ask, documents, retrieve
 
 app = FastAPI(title="RAG Assistant API", version="0.1.0")
 
@@ -46,3 +54,4 @@ async def root():
 
 app.include_router(ask.router)
 app.include_router(documents.router)
+app.include_router(retrieve.router)

@@ -1,12 +1,18 @@
 """Document ingestion: PDF extraction, chunking, embeddings."""
 
+import logging
 import uuid
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 
 from app.core.config import settings
 from app.models import Document, DocumentChunk
+from app.services.jd_chunking import chunk_jd_pages
+from app.services.jd_extraction import extract_jd_struct
+from app.services.jd_sections import normalize_jd_text
 from app.services.storage import get_storage
+
+logger = logging.getLogger(__name__)
 
 
 def _extract_text_per_page(pdf_bytes: bytes) -> list[tuple[int, str]]:
@@ -16,63 +22,24 @@ def _extract_text_per_page(pdf_bytes: bytes) -> list[tuple[int, str]]:
     doc = fitz.open(stream=pdf_bytes, filetype="pdf")
     try:
         result = []
-        for i in range(min(len(doc), settings.max_pdf_pages)):
+        limit = min(len(doc), settings.max_pdf_pages)
+        for i in range(limit):
             page = doc[i]
             text = page.get_text()
             result.append((i + 1, text))
+            logger.debug(
+                "PDF extraction page=%s text_len=%s",
+                i + 1,
+                len(text),
+            )
+        logger.info(
+            "PDF extraction done: pages_extracted=%s per_page_lengths=%s",
+            len(result),
+            [len(t) for _, t in result],
+        )
         return result
     finally:
         doc.close()
-
-
-def _is_word_char(c: str) -> bool:
-    """True if char is alphanumeric or hyphen/underscore (part of a word)."""
-    return c.isalnum() or c in "-_"
-
-
-def _chunk_text(
-    page_texts: list[tuple[int, str]],
-) -> list[tuple[int, str]]:
-    """
-    Chunk text with configurable size and overlap, preferring word boundaries.
-    Filters out tiny chunks (e.g. PDF footers like "Page 2 of 2").
-    Returns [(page_number, chunk_text), ...]
-    """
-    chunk_size = settings.chunk_size
-    overlap = settings.chunk_overlap
-    min_chars = settings.min_chunk_chars
-    step = max(1, chunk_size - overlap)
-
-    chunks: list[tuple[int, str]] = []
-    for page_num, text in page_texts:
-        text = text.strip()
-        if not text:
-            continue
-        start = 0
-        while start < len(text):
-            end = min(start + chunk_size, len(text))
-
-            # Prefer word boundary at end: avoid cutting mid-word
-            if end < len(text) and _is_word_char(text[end]):
-                last_space = text.rfind(" ", start, end)
-                if last_space > start:
-                    end = last_space + 1
-
-            # If we're starting mid-word, back up to include the whole word (only if we find a space)
-            if start > 0 and _is_word_char(text[start - 1]):
-                prev_space = text.rfind(" ", 0, start)
-                if prev_space >= 0:
-                    start = prev_space + 1
-                    if start >= end:
-                        start += step
-                        continue
-
-            chunk = text[start:end].strip()
-            if chunk and len(chunk) >= min_chars:
-                chunks.append((page_num, chunk))
-            start += step
-
-    return chunks[: settings.max_chunks_per_doc]
 
 
 def _create_embeddings(texts: list[str]) -> list[list[float]]:
@@ -125,35 +92,99 @@ async def run_ingestion(document_id: uuid.UUID) -> None:
                 await db.commit()
                 return
 
-            chunks_with_pages = _chunk_text(page_texts)
-            if not chunks_with_pages:
+            full_text = "\n\n".join(t for _, t in page_texts)
+            norm_text = normalize_jd_text(full_text)
+            jd_struct = extract_jd_struct(norm_text)
+            doc.jd_extraction_json = jd_struct
+
+            chunk_results = chunk_jd_pages(
+                page_texts,
+                min_chars=settings.min_chunk_chars,
+                max_chunks=settings.max_chunks_per_doc,
+            )
+            chunk_stats = {"chunks_produced": len(chunk_results), "total_paragraphs": 0}
+            if not chunk_results:
                 doc.status = "failed"
                 doc.error_message = "No chunks produced after extraction"
                 await db.commit()
                 return
 
-            texts = [c[1] for c in chunks_with_pages]
+            low_signal_count = sum(1 for c in chunk_results if c.is_low_signal)
+
+            logger.info(
+                "ingestion BEFORE insert: pages_extracted=%s num_paragraphs=%s num_chunks_generated=%s "
+                "num_chunks_marked_low_signal=%s num_chunks_to_insert=%s",
+                len(page_texts),
+                chunk_stats.get("total_paragraphs", "?"),
+                chunk_stats.get("chunks_produced", len(chunk_results)),
+                low_signal_count,
+                len(chunk_results),
+            )
+
+            texts = [c.content for c in chunk_results]
             embeddings = _create_embeddings(texts)
 
-            # Delete existing chunks for this document (re-ingestion)
+            if len(embeddings) != len(chunk_results):
+                logger.error(
+                    "embedding count mismatch: chunks=%s embeddings=%s",
+                    len(chunk_results),
+                    len(embeddings),
+                )
+                doc.status = "failed"
+                doc.error_message = f"Embedding count mismatch: {len(embeddings)} != {len(chunk_results)}"
+                await db.commit()
+                return
+
             await db.execute(delete(DocumentChunk).where(DocumentChunk.document_id == document_id))
 
-            for i, ((page_num, content), embedding) in enumerate(
-                zip(chunks_with_pages, embeddings)
-            ):
+            inserted = 0
+            for i, (cr, embedding) in enumerate(zip(chunk_results, embeddings)):
                 chunk = DocumentChunk(
                     document_id=document_id,
                     chunk_index=i,
-                    content=content,
-                    page_number=page_num,
+                    content=cr.content,
+                    page_number=cr.page_number,
+                    section=cr.section_type,
+                    is_boilerplate=False,
+                    quality_score=cr.quality_score,
+                    is_low_signal=cr.is_low_signal,
+                    content_hash=cr.content_hash,
+                    section_type=cr.section_type,
+                    skills_detected=cr.skills_detected,
+                    doc_domain=cr.doc_domain,
                     embedding=embedding,
                 )
                 db.add(chunk)
+                inserted += 1
 
+            logger.info(
+                "ingestion AFTER insert: num_rows_inserted=%s document_id=%s",
+                inserted,
+                document_id,
+            )
             doc.page_count = len(page_texts)
             doc.status = "ready"
             doc.error_message = None
             await db.commit()
+
+            count_result = await db.execute(
+                select(func.count()).select_from(DocumentChunk).where(
+                    DocumentChunk.document_id == document_id
+                )
+            )
+            num_rows_in_db = count_result.scalar() or 0
+            logger.info(
+                "ingestion AFTER commit: num_rows_in_db=%s (inserted=%s) document_id=%s",
+                num_rows_in_db,
+                inserted,
+                document_id,
+            )
+            if num_rows_in_db != inserted:
+                logger.warning(
+                    "ingestion row count mismatch: inserted=%s but DB has %s",
+                    inserted,
+                    num_rows_in_db,
+                )
 
         except Exception as e:
             await db.rollback()

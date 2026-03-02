@@ -3,7 +3,7 @@ from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
 from sqlalchemy import ForeignKey, Index, text
-from sqlalchemy.dialects.postgresql import UUID
+from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -29,6 +29,14 @@ class DocumentChunk(Base):
     chunk_index: Mapped[int] = mapped_column(nullable=False)
     content: Mapped[str] = mapped_column(nullable=False)
     page_number: Mapped[int] = mapped_column(nullable=False)
+    section: Mapped[str | None] = mapped_column(nullable=True)
+    is_boilerplate: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
+    quality_score: Mapped[float | None] = mapped_column(nullable=True, server_default="1.0")
+    is_low_signal: Mapped[bool] = mapped_column(nullable=False, default=False, server_default="false")
+    content_hash: Mapped[str | None] = mapped_column(nullable=True)
+    section_type: Mapped[str | None] = mapped_column(nullable=True)
+    skills_detected: Mapped[list | None] = mapped_column(JSONB(), nullable=True)
+    doc_domain: Mapped[str | None] = mapped_column(nullable=True)
     embedding: Mapped[list[float]] = mapped_column(
         Vector(EMBEDDING_DIM),
         nullable=False,
@@ -46,4 +54,7 @@ class DocumentChunk(Base):
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
         ),
+        Index("ix_document_chunks_doc_low_signal", "document_id", "is_low_signal"),
+        Index("ix_document_chunks_section_type", "document_id", "section_type"),
+        Index("ix_document_chunks_doc_domain", "doc_domain"),
     )

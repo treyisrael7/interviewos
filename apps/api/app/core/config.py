@@ -23,10 +23,11 @@ class Settings(BaseSettings):
     top_k_max: int = 8  # TOP_K_MAX
     max_completion_tokens: int = 500  # MAX_COMPLETION_TOKENS
 
-    # Chunking (configurable)
-    chunk_size: int = 512  # CHUNK_SIZE
-    chunk_overlap: int = 128  # CHUNK_OVERLAP (higher reduces mid-word splits)
-    min_chunk_chars: int = 25  # MIN_CHUNK_CHARS (filter tiny chunks like "Page 2 of 2")
+    # Chunking (JD uses jd_chunking; these retained for potential generic docs)
+    chunk_size: int = 512  # CHUNK_SIZE (legacy)
+    min_chunk_chars: int = 25  # MIN_CHUNK_CHARS
+    top_n_candidates: int = 50  # Fetch N by pgvector similarity before MMR
+    mmr_lambda: float = 0.7  # MMR: lambda*sim(q,d) - (1-lambda)*max_sim(d,selected)
 
     # OpenAI embeddings
     openai_api_key: str | None = None  # OPENAI_API_KEY
