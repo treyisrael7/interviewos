@@ -1,0 +1,81 @@
+"""Retrieval evaluation schema, loaders, and runners."""
+
+from .comparison import (
+    RetrievalEvalCaseComparison,
+    RetrievalEvalComparisonResult,
+    RetrievalEvalComparisonSummary,
+    RetrievalModeCaseSnapshot,
+    build_comparison_result,
+    compare_eval_dataset,
+    write_comparison_result_json,
+)
+from .loader import BUILTIN_DATASETS, get_builtin_dataset_path, load_builtin_dataset, load_eval_dataset
+from .metrics import (
+    RetrievalEvalAggregateMetrics,
+    RetrievalEvalCaseMetrics,
+    RetrievalEvalExpectationResult,
+    aggregate_case_metrics,
+    compute_case_metrics,
+    evaluate_case_expectations,
+)
+from .runner import (
+    RetrievalEvalCaseResult,
+    RetrievalEvalExpectedEvidence,
+    RetrievalEvalRequest,
+    RetrievalEvalReturnedChunk,
+    RetrievalEvalRunResult,
+    build_expected_evidence,
+    build_failure_reasons,
+    build_default_request,
+    resolve_case_document_id,
+    run_eval_case,
+    run_eval_dataset,
+    run_eval_dataset_for_modes,
+)
+from .report import (
+    format_comparison_summary,
+    format_expected_evidence,
+    format_failed_case_details,
+    format_returned_chunks,
+    format_single_run_summary,
+)
+from .schema import RetrievalEvalCase, RetrievalEvalDataset
+
+__all__ = [
+    "BUILTIN_DATASETS",
+    "RetrievalEvalCase",
+    "RetrievalEvalCaseComparison",
+    "RetrievalEvalAggregateMetrics",
+    "RetrievalEvalCaseResult",
+    "RetrievalEvalCaseMetrics",
+    "RetrievalEvalComparisonResult",
+    "RetrievalEvalComparisonSummary",
+    "RetrievalEvalDataset",
+    "RetrievalEvalExpectedEvidence",
+    "RetrievalEvalExpectationResult",
+    "RetrievalModeCaseSnapshot",
+    "RetrievalEvalRequest",
+    "RetrievalEvalReturnedChunk",
+    "RetrievalEvalRunResult",
+    "aggregate_case_metrics",
+    "build_comparison_result",
+    "build_default_request",
+    "build_expected_evidence",
+    "build_failure_reasons",
+    "compare_eval_dataset",
+    "compute_case_metrics",
+    "evaluate_case_expectations",
+    "format_comparison_summary",
+    "format_expected_evidence",
+    "format_failed_case_details",
+    "format_returned_chunks",
+    "format_single_run_summary",
+    "get_builtin_dataset_path",
+    "load_builtin_dataset",
+    "load_eval_dataset",
+    "resolve_case_document_id",
+    "run_eval_case",
+    "run_eval_dataset",
+    "run_eval_dataset_for_modes",
+    "write_comparison_result_json",
+]

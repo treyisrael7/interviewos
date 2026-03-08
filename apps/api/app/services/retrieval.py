@@ -3,6 +3,7 @@
 import logging
 import re
 import uuid
+from typing import Literal
 
 from sqlalchemy import func, select
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -19,6 +20,8 @@ SECTION_TYPE_EXPANSION: dict[str, list[str]] = {
 from app.services.ingestion import _create_embeddings
 
 logger = logging.getLogger(__name__)
+
+RetrievalMode = Literal["hybrid", "semantic", "keyword"]
 
 # Query keywords -> suggested section types (canonical: responsibilities, qualifications, tools, compensation, about, other)
 QUERY_SECTION_HINTS: dict[str, list[str]] = {
@@ -312,6 +315,24 @@ def _log_retrieval_summary(
     )
 
 
+def _finalize_single_source_candidates(
+    candidates: list[dict],
+    *,
+    query_embedding: list[float] | None,
+    top_k: int,
+    retrieval_source: str,
+) -> list[dict]:
+    """Apply shared post-processing for semantic-only or keyword-only candidate lists."""
+    ranked = candidates
+    if query_embedding is not None and candidates:
+        ranked = _mmr_select(candidates, query_embedding, top_k, settings.mmr_lambda)
+    else:
+        ranked = candidates[:top_k]
+        for c in ranked:
+            c.pop("embedding", None)
+    return _finalize_chunks(_with_retrieval_source_defaults(ranked, retrieval_source))
+
+
 def _mmr_select(
     candidates: list[dict],
     query_embedding: list[float],
@@ -409,6 +430,11 @@ async def _retrieve_semantic_candidates(
     return [_chunk_payload_from_row(row) for row in rows]
 
 
+def get_default_retrieval_mode() -> RetrievalMode:
+    """Return the retrieval mode implied by current app settings."""
+    return "hybrid" if settings.hybrid_retrieval_enabled else "semantic"
+
+
 async def retrieve_chunks_keyword(
     db: AsyncSession,
     document_id: uuid.UUID,
@@ -478,11 +504,12 @@ async def retrieve_chunks_keyword(
     return [_chunk_payload_from_row(row) for row in rows]
 
 
-async def retrieve_chunks(
+async def retrieve_chunks_for_mode(
     db: AsyncSession,
     document_id: uuid.UUID,
-    query_embedding: list[float],
+    query_embedding: list[float] | None,
     top_k: int,
+    mode: RetrievalMode = "hybrid",
     include_low_signal: bool = False,
     section_types: list[str] | None = None,
     doc_domain: str | None = None,
@@ -491,27 +518,33 @@ async def retrieve_chunks(
     query_text: str | None = None,
 ) -> list[dict]:
     """
-    Shared retrieval entry point used by ask/retrieve/interview flows.
+    Shared retrieval entry point used by eval tooling and production callers.
 
     Behavior:
-    - always performs the existing semantic pgvector retrieval
-    - optionally augments it with PostgreSQL full-text keyword retrieval
-    - merges and deduplicates both candidate sets
-    - passes the final candidate pool through the existing MMR logic
+    - `semantic`: vector retrieval + MMR
+    - `keyword`: PostgreSQL full-text retrieval (+ MMR when a query embedding is provided)
+    - `hybrid`: semantic retrieval plus keyword augmentation and merge
     """
-    semantic_candidates = await _retrieve_semantic_candidates(
-        db=db,
-        document_id=document_id,
-        query_embedding=query_embedding,
-        top_k=top_k,
-        include_low_signal=include_low_signal,
-        section_types=section_types,
-        doc_domain=doc_domain,
-        source_types=source_types,
-        additional_document_ids=additional_document_ids,
-    )
+    normalized_query_text = (query_text or "").strip()
 
-    if not settings.hybrid_retrieval_enabled:
+    if mode not in ("hybrid", "semantic", "keyword"):
+        raise ValueError(f"Unsupported retrieval mode: {mode}")
+
+    if mode in ("hybrid", "semantic") and query_embedding is None:
+        raise ValueError(f"query_embedding is required for retrieval mode '{mode}'")
+
+    if mode == "semantic":
+        semantic_candidates = await _retrieve_semantic_candidates(
+            db=db,
+            document_id=document_id,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            include_low_signal=include_low_signal,
+            section_types=section_types,
+            doc_domain=doc_domain,
+            source_types=source_types,
+            additional_document_ids=additional_document_ids,
+        )
         final_candidates = _with_retrieval_source_defaults(
             _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
             if semantic_candidates else [],
@@ -527,7 +560,56 @@ async def retrieve_chunks(
         )
         return _finalize_chunks(final_candidates)
 
-    normalized_query_text = (query_text or "").strip()
+    if mode == "keyword":
+        if not normalized_query_text:
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=0,
+                keyword_hits=0,
+                deduped_hits=0,
+                final_hits=0,
+                hybrid_enabled=False,
+            )
+            return []
+        keyword_candidates = await retrieve_chunks_keyword(
+            db=db,
+            document_id=document_id,
+            query_text=normalized_query_text,
+            top_k=max(top_k, settings.top_n_candidates),
+            include_low_signal=include_low_signal,
+            section_types=section_types,
+            doc_domain=doc_domain,
+            source_types=source_types,
+            additional_document_ids=additional_document_ids,
+        )
+        final_candidates = _finalize_single_source_candidates(
+            keyword_candidates,
+            query_embedding=query_embedding,
+            top_k=top_k,
+            retrieval_source="keyword",
+        )
+        _log_retrieval_summary(
+            document_id=document_id,
+            semantic_hits=0,
+            keyword_hits=len(keyword_candidates),
+            deduped_hits=len(keyword_candidates),
+            final_hits=len(final_candidates),
+            hybrid_enabled=False,
+        )
+        return final_candidates
+
+    semantic_candidates = await _retrieve_semantic_candidates(
+        db=db,
+        document_id=document_id,
+        query_embedding=query_embedding,
+        top_k=top_k,
+        include_low_signal=include_low_signal,
+        section_types=section_types,
+        doc_domain=doc_domain,
+        source_types=source_types,
+        additional_document_ids=additional_document_ids,
+    )
+
     if not normalized_query_text:
         final_candidates = _with_retrieval_source_defaults(
             _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
@@ -605,3 +687,37 @@ async def retrieve_chunks(
         hybrid_enabled=True,
     )
     return _finalize_chunks(diversified)
+
+
+async def retrieve_chunks(
+    db: AsyncSession,
+    document_id: uuid.UUID,
+    query_embedding: list[float],
+    top_k: int,
+    include_low_signal: bool = False,
+    section_types: list[str] | None = None,
+    doc_domain: str | None = None,
+    source_types: list[str] | None = None,
+    additional_document_ids: list[uuid.UUID] | None = None,
+    query_text: str | None = None,
+) -> list[dict]:
+    """
+    Shared production retrieval entry point used by ask/retrieve/interview flows.
+
+    The retrieval mode remains controlled by app settings so existing routes keep
+    their current behavior. Eval tooling can call `retrieve_chunks_for_mode()`
+    directly to compare semantic, keyword, and hybrid strategies.
+    """
+    return await retrieve_chunks_for_mode(
+        db=db,
+        document_id=document_id,
+        query_embedding=query_embedding,
+        top_k=top_k,
+        mode=get_default_retrieval_mode(),
+        include_low_signal=include_low_signal,
+        section_types=section_types,
+        doc_domain=doc_domain,
+        source_types=source_types,
+        additional_document_ids=additional_document_ids,
+        query_text=query_text,
+    )

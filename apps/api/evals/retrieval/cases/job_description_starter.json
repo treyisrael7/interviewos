@@ -1,0 +1,83 @@
+{
+  "version": 1,
+  "dataset": "job_description_starter",
+  "description": "Starter internal retrieval eval cases for job-description documents.",
+  "cases": [
+    {
+      "id": "jd-salary-range",
+      "fixture_ref": "platform_engineer_jd",
+      "query": "What is the salary range for this role?",
+      "expected_content_substrings": [
+        "$160,000",
+        "$190,000",
+        "salary range"
+      ],
+      "expected_section_types": [
+        "compensation"
+      ],
+      "expected_source_types": [
+        "jd"
+      ],
+      "top_k": 4,
+      "notes": "Compensation-style ask query. Should align with section hinting for salary/pay questions."
+    },
+    {
+      "id": "jd-required-skills",
+      "fixture_ref": "platform_engineer_jd",
+      "query": "What skills and qualifications are required?",
+      "expected_content_substrings": [
+        "Python",
+        "PostgreSQL",
+        "5+ years",
+        "distributed systems"
+      ],
+      "expected_section_types": [
+        "qualifications",
+        "tools"
+      ],
+      "expected_source_types": [
+        "jd"
+      ],
+      "top_k": 6,
+      "notes": "Broad qualifications query that should surface both technical skills and explicit requirements."
+    },
+    {
+      "id": "jd-platform-tooling",
+      "fixture_ref": "platform_engineer_jd",
+      "query": "Which tools and technologies does the team use?",
+      "expected_content_substrings": [
+        "AWS",
+        "Kubernetes",
+        "Terraform",
+        "pgvector"
+      ],
+      "expected_section_types": [
+        "tools"
+      ],
+      "expected_source_types": [
+        "jd"
+      ],
+      "top_k": 5,
+      "notes": "Tooling query aimed at the tools/technologies section."
+    },
+    {
+      "id": "jd-responsibilities",
+      "fixture_ref": "platform_engineer_jd",
+      "query": "What are the main responsibilities of this role?",
+      "expected_content_substrings": [
+        "build",
+        "operate",
+        "backend services",
+        "collaborate"
+      ],
+      "expected_section_types": [
+        "responsibilities"
+      ],
+      "expected_source_types": [
+        "jd"
+      ],
+      "top_k": 5,
+      "notes": "Baseline responsibilities retrieval for interview question generation and ask flows."
+    }
+  ]
+}

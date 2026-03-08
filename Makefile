@@ -1,4 +1,4 @@
-.PHONY: up down up-verbose up-minimal logs db-migrate build clean
+.PHONY: up down up-verbose up-minimal logs db-migrate build clean retrieval-eval retrieval-eval-compare
 
 up:
 	docker compose up -d --build
@@ -33,6 +33,12 @@ test:
 
 test-docker:
 	docker compose build api && docker compose run --rm api sh -c "alembic upgrade head && python -m pytest -v"
+
+retrieval-eval:
+	cd apps/api && python -m evals.retrieval.entrypoint $(ARGS)
+
+retrieval-eval-compare:
+	cd apps/api && python -m evals.retrieval.entrypoint --compare $(ARGS)
 
 clean:
 	docker compose down -v
