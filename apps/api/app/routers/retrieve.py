@@ -1,4 +1,4 @@
-"""Retrieve: semantic search over document chunks."""
+"""Retrieve: hybrid search over document chunks."""
 
 import logging
 import uuid
@@ -70,7 +70,7 @@ async def retrieve(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Semantic search over document chunks.
+    Hybrid retrieval over document chunks.
     Validates: top_k <= TOP_K_MAX, doc ownership, status=ready.
     """
     if body.top_k > settings.top_k_max:
@@ -122,6 +122,7 @@ async def retrieve(
             db=db,
             document_id=body.document_id,
             query_embedding=query_embedding,
+            query_text=body.query,
             top_k=body.top_k,
             include_low_signal=body.include_low_signal,
             section_types=section_types,

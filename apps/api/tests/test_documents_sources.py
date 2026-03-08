@@ -10,11 +10,6 @@ from app.services.storage import LocalStorage
 
 
 @pytest.fixture
-def demo_key_off(monkeypatch):
-    monkeypatch.setattr(settings, "demo_key", None)
-
-
-@pytest.fixture
 def clerk_jwks_off(monkeypatch):
     monkeypatch.setattr(settings, "clerk_jwks_url", None)
 

@@ -31,7 +31,7 @@ COMPETENCIES_MAX = 12
 async def extract_competencies(db: AsyncSession, document_id: uuid.UUID) -> list[dict] | None:
     """
     Extract 8–12 competencies from JD using RAG (retrieved chunks only, no raw JD).
-    Runs semantic retrieval for responsibilities, requirements, qualifications, skills, preferred.
+    Runs hybrid retrieval for responsibilities, requirements, qualifications, skills, preferred.
     Returns list of { id, label, description?, evidence: [{ chunkId, page?, sourceTitle }] }.
     Returns None if extraction fails or no chunks found.
     """
@@ -55,6 +55,7 @@ async def extract_competencies(db: AsyncSession, document_id: uuid.UUID) -> list
                 db=db,
                 document_id=document_id,
                 query_embedding=q_embedding,
+                query_text=query,
                 top_k=CHUNKS_PER_QUERY,
                 include_low_signal=False,
                 section_types=None,
@@ -68,6 +69,10 @@ async def extract_competencies(db: AsyncSession, document_id: uuid.UUID) -> list
                         "page": c.get("page") or c.get("page_number"),
                         "sourceTitle": c.get("sourceTitle", ""),
                         "text": c.get("text") or c.get("snippet", ""),
+                        "retrieval_source": c.get("retrieval_source"),
+                        "semantic_score": c.get("semantic_score"),
+                        "keyword_score": c.get("keyword_score"),
+                        "final_score": c.get("final_score"),
                     }
         except Exception as e:
             logger.warning("Competency retrieval for query=%s failed: %s", query, e)
@@ -142,12 +147,20 @@ Extract 8–12 competencies. Output JSON only."""
                         "chunkId": c.get("chunkId", ""),
                         "page": c.get("page"),
                         "sourceTitle": c.get("sourceTitle", ""),
+                        "retrieval_source": c.get("retrieval_source"),
+                        "semantic_score": c.get("semantic_score"),
+                        "keyword_score": c.get("keyword_score"),
+                        "final_score": c.get("final_score"),
                     })
             if not evidence and chunks_list:
                 evidence.append({
                     "chunkId": chunks_list[0].get("chunkId", ""),
                     "page": chunks_list[0].get("page"),
                     "sourceTitle": chunks_list[0].get("sourceTitle", ""),
+                    "retrieval_source": chunks_list[0].get("retrieval_source"),
+                    "semantic_score": chunks_list[0].get("semantic_score"),
+                    "keyword_score": chunks_list[0].get("keyword_score"),
+                    "final_score": chunks_list[0].get("final_score"),
                 })
 
             comp_id = str(rc.get("id", "")) or f"comp-{i}"

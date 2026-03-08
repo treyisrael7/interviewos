@@ -16,12 +16,6 @@ PRESIGN_BODY = {
 
 
 @pytest.fixture
-def demo_key_off(monkeypatch):
-    """Disable demo key so routes work without header."""
-    monkeypatch.setattr(settings, "demo_key", None)
-
-
-@pytest.fixture
 def use_local_storage(monkeypatch, tmp_path):
     """Force LocalStorage with temp dir so we don't touch S3 or project uploads."""
     storage = LocalStorage(base_path=str(tmp_path))

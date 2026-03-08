@@ -84,6 +84,7 @@ async def retrieve_interview_evidence(
         db=db,
         document_id=document_id,
         query_embedding=query_embedding,
+        query_text=query,
         top_k=min(INTERVIEW_EVIDENCE_TOP_K, settings.top_k_max * 2),
         include_low_signal=False,
         section_types=section_types,
@@ -97,6 +98,7 @@ async def retrieve_interview_evidence(
             db=db,
             document_id=document_id,
             query_embedding=query_embedding,
+            query_text=query,
             top_k=min(INTERVIEW_EVIDENCE_TOP_K, settings.top_k_max * 2),
             include_low_signal=False,
             section_types=None,
@@ -111,6 +113,10 @@ async def retrieve_interview_evidence(
             "snippet": c["snippet"],
             "sourceType": c.get("sourceType", "jd"),
             "sourceTitle": c.get("sourceTitle", ""),
+            "retrieval_source": c.get("retrieval_source"),
+            "semantic_score": c.get("semantic_score"),
+            "keyword_score": c.get("keyword_score"),
+            "final_score": c.get("final_score"),
         }
         for c in chunks
     ]
@@ -147,6 +153,7 @@ async def _retrieve_evidence_for_competency(
         db=db,
         document_id=document_id,
         query_embedding=query_embedding,
+        query_text=competency_label,
         top_k=COMPETENCY_EVIDENCE_TOP_K,
         include_low_signal=False,
         section_types=None,
@@ -162,6 +169,10 @@ async def _retrieve_evidence_for_competency(
             "snippet": c.get("snippet") or c.get("text", ""),
             "sourceType": c.get("sourceType", "jd"),
             "sourceTitle": c.get("sourceTitle", ""),
+            "retrieval_source": c.get("retrieval_source"),
+            "semantic_score": c.get("semantic_score"),
+            "keyword_score": c.get("keyword_score"),
+            "final_score": c.get("final_score"),
         }
         for c in chunks
     ]
@@ -244,6 +255,10 @@ Generate exactly 1 {question_type} question. Output JSON only."""
                 "snippet": str(e.get("snippet", "")),
                 "sourceType": e.get("sourceType", "jd"),
                 "sourceTitle": e.get("sourceTitle", ""),
+                "retrieval_source": e.get("retrieval_source"),
+                "semantic_score": e.get("semantic_score"),
+                "keyword_score": e.get("keyword_score"),
+                "final_score": e.get("final_score"),
             }
             for e in evidence
         ]
@@ -736,19 +751,6 @@ def evaluate_answer(
 
 
 AUXILIARY_SOURCE_TYPES = ["resume", "company", "notes"]
-USER_RESUME_DOC_DOMAIN = "user_resume"
-
-
-async def get_user_resume_document_id(db: AsyncSession, user_id: uuid.UUID) -> uuid.UUID | None:
-    """Return document_id of user's account-level resume, or None if none."""
-    r = await db.execute(
-        select(Document.id).where(
-            Document.user_id == user_id,
-            Document.doc_domain == USER_RESUME_DOC_DOMAIN,
-        )
-    )
-    row = r.scalar_one_or_none()
-    return row[0] if row else None
 
 
 async def _has_auxiliary_sources(
@@ -787,6 +789,7 @@ async def _retrieve_auxiliary_evidence(
         db=db,
         document_id=document_id,
         query_embedding=query_embedding,
+        query_text=query,
         top_k=top_k,
         include_low_signal=False,
         section_types=None,
@@ -803,6 +806,10 @@ async def _retrieve_auxiliary_evidence(
             "snippet": c.get("snippet") or c.get("text", ""),
             "sourceType": c.get("sourceType", "jd"),
             "sourceTitle": c.get("sourceTitle", ""),
+            "retrieval_source": c.get("retrieval_source"),
+            "semantic_score": c.get("semantic_score"),
+            "keyword_score": c.get("keyword_score"),
+            "final_score": c.get("final_score"),
         }
         for c in chunks
     ]

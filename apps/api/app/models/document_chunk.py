@@ -2,8 +2,8 @@ import uuid
 from datetime import datetime
 
 from pgvector.sqlalchemy import Vector
-from sqlalchemy import ForeignKey, Index, text
-from sqlalchemy.dialects.postgresql import JSONB, UUID
+from sqlalchemy import Computed, ForeignKey, Index, text
+from sqlalchemy.dialects.postgresql import JSONB, TSVECTOR, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.models.base import Base
@@ -46,6 +46,14 @@ class DocumentChunk(Base):
         Vector(EMBEDDING_DIM),
         nullable=False,
     )
+    search_vector: Mapped[str] = mapped_column(
+        TSVECTOR,
+        Computed(
+            "to_tsvector('english'::regconfig, COALESCE(content, ''::text))",
+            persisted=True,
+        ),
+        nullable=False,
+    )
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"),
         nullable=False,
@@ -58,6 +66,11 @@ class DocumentChunk(Base):
             postgresql_using="hnsw",
             postgresql_with={"m": 16, "ef_construction": 64},
             postgresql_ops={"embedding": "vector_cosine_ops"},
+        ),
+        Index(
+            "ix_document_chunks_search_vector",
+            "search_vector",
+            postgresql_using="gin",
         ),
         Index("ix_document_chunks_doc_low_signal", "document_id", "is_low_signal"),
         Index("ix_document_chunks_section_type", "document_id", "section_type"),

@@ -8,11 +8,6 @@ import pytest
 from app.core.config import settings
 
 
-@pytest.fixture
-def demo_key_off(monkeypatch):
-    monkeypatch.setattr(settings, "demo_key", None)
-
-
 @pytest.mark.asyncio
 async def test_ask_requires_valid_input(client, demo_key_off, monkeypatch):
     """Ask returns 422 for missing or invalid body."""

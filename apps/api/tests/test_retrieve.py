@@ -7,11 +7,6 @@ import pytest
 from app.core.config import settings
 
 
-@pytest.fixture
-def demo_key_off(monkeypatch):
-    monkeypatch.setattr(settings, "demo_key", None)
-
-
 @pytest.mark.asyncio
 async def test_retrieve_requires_valid_input(client, demo_key_off):
     """Retrieve returns 422 for missing or invalid body."""
@@ -446,3 +441,170 @@ async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch):
     assert resp2.status_code == 200
     types_seen = {c["sourceType"] for c in resp2.json()["chunks"]}
     assert "jd" in types_seen or "notes" in types_seen
+
+
+@pytest.mark.asyncio
+async def test_retrieve_chunks_keyword_returns_ranked_chunks(demo_key_off, seed_document_bundle):
+    """Keyword retrieval returns chunk metadata in the shared retrieval shape."""
+    from app.services.retrieval import retrieve_chunks_keyword
+
+    dim = 1536
+    mock_vec = [0.1] * dim
+
+    seeded = await seed_document_bundle(
+        user_email="keyword-retrieve@t.local",
+        filename="jd.pdf",
+        doc_domain="job_description",
+        sources=[{
+            "key": "jd",
+            "source_type": "jd",
+            "title": "Job Description",
+            "original_file_name": "jd.pdf",
+        }],
+        chunks=[
+            {
+                "source_key": "jd",
+                "content": "Python and AWS are required for this backend platform role.",
+                "page_number": 1,
+                "section_type": "qualifications",
+                "doc_domain": "job_description",
+                "embedding": mock_vec,
+            },
+            {
+                "source_key": "jd",
+                "content": "Benefits include health insurance and PTO.",
+                "page_number": 2,
+                "section_type": "compensation",
+                "doc_domain": "job_description",
+                "embedding": mock_vec,
+            },
+        ],
+    )
+    doc_id = seeded["document_id"]
+
+    from app.db.base import async_session_maker
+    async with async_session_maker() as db:
+        chunks = await retrieve_chunks_keyword(
+            db=db,
+            document_id=doc_id,
+            query_text="python aws backend",
+            top_k=3,
+            include_low_signal=False,
+            section_types=None,
+            doc_domain="job_description",
+            source_types=["jd"],
+        )
+
+    assert len(chunks) == 1
+    c = chunks[0]
+    assert c["page"] == 1
+    assert c["sourceType"] == "jd"
+    assert c["sourceTitle"] == "Job Description"
+    assert c["section_type"] == "qualifications"
+    assert "Python and AWS" in c["text"]
+    assert c["score"] > 0
+
+
+@pytest.mark.asyncio
+async def test_retrieve_chunks_keyword_respects_filters(demo_key_off, seed_document_bundle):
+    """Keyword retrieval reuses source and section filters from semantic retrieval."""
+    from app.services.retrieval import retrieve_chunks_keyword
+
+    dim = 1536
+    mock_vec = [0.1] * dim
+
+    seeded = await seed_document_bundle(
+        user_email="keyword-filters@t.local",
+        filename="kit.pdf",
+        doc_domain="job_description",
+        sources=[
+            {
+                "key": "jd",
+                "source_type": "jd",
+                "title": "Job Description",
+                "original_file_name": "jd.pdf",
+            },
+            {
+                "key": "notes",
+                "source_type": "notes",
+                "title": "Notes",
+                "original_file_name": None,
+            },
+        ],
+        chunks=[
+            {
+                "source_key": "jd",
+                "content": "Python experience is required for this role.",
+                "page_number": 1,
+                "section_type": "qualifications",
+                "doc_domain": "job_description",
+                "embedding": mock_vec,
+            },
+            {
+                "source_key": "notes",
+                "content": "Python experience came up in recruiter notes.",
+                "page_number": 1,
+                "section_type": "other",
+                "doc_domain": "general",
+                "embedding": mock_vec,
+            },
+        ],
+    )
+    doc_id = seeded["document_id"]
+
+    from app.db.base import async_session_maker
+    async with async_session_maker() as db:
+        chunks = await retrieve_chunks_keyword(
+            db=db,
+            document_id=doc_id,
+            query_text="python experience",
+            top_k=5,
+            source_types=["jd"],
+            section_types=["qualifications"],
+            doc_domain="job_description",
+        )
+
+    assert len(chunks) == 1
+    assert chunks[0]["sourceType"] == "jd"
+    assert chunks[0]["section_type"] == "qualifications"
+
+
+def test_normalize_keyword_query_text_preserves_technical_tokens():
+    """Keyword preprocessing keeps high-value technical terms retrieval-friendly."""
+    from app.services.retrieval import _normalize_keyword_query_text
+
+    normalized = _normalize_keyword_query_text(" Need C++, C#, .NET, Node.js, Next.js, React.js, PostgreSQL, pgvector, AWS!! ")
+
+    assert '("c++" OR cpp)' in normalized
+    assert '("c#" OR csharp)' in normalized
+    assert '(".net" OR dotnet)' in normalized
+    assert '("node.js" OR nodejs)' in normalized
+    assert '("next.js" OR nextjs)' in normalized
+    assert '("react.js" OR reactjs)' in normalized
+    assert "(postgresql OR postgres)" in normalized
+    assert '(pgvector OR "pg vector")' in normalized
+    assert '(aws OR "amazon web services")' in normalized
+
+
+def test_normalize_keyword_query_text_expands_jd_variants():
+    """Keyword preprocessing adds simple format variants common in job descriptions."""
+    from app.services.retrieval import _normalize_keyword_query_text
+
+    normalized = _normalize_keyword_query_text("frontend backend full stack engineer")
+
+    assert '(frontend OR "front-end")' in normalized
+    assert '(backend OR "back-end")' in normalized
+    assert '("full stack" OR "full-stack")' in normalized
+
+
+def test_normalize_keyword_query_text_cleans_noise_without_aggressive_rewrites():
+    """Keyword preprocessing removes punctuation noise but keeps the query readable."""
+    from app.services.retrieval import _normalize_keyword_query_text
+
+    normalized = _normalize_keyword_query_text(" senior backend?? role;;;   with pgvector + PostgreSQL ")
+
+    assert "?" not in normalized
+    assert ";" not in normalized
+    assert '(backend OR "back-end")' in normalized
+    assert '(pgvector OR "pg vector")' in normalized
+    assert "(postgresql OR postgres)" in normalized

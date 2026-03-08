@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(
         env_file=(_ROOT / ".env", _API_ROOT / ".env"),
         env_file_encoding="utf-8",
+        extra="ignore",
     )
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_os"
@@ -52,6 +53,7 @@ class Settings(BaseSettings):
     min_chunk_chars: int = 25  # MIN_CHUNK_CHARS
     top_n_candidates: int = 50  # Fetch N by pgvector similarity before MMR
     mmr_lambda: float = 0.7  # MMR: lambda*sim(q,d) - (1-lambda)*max_sim(d,selected)
+    hybrid_retrieval_enabled: bool = True  # HYBRID_RETRIEVAL_ENABLED; safe because retrieval falls back to semantic-only on FTS errors
 
     # OpenAI embeddings
     openai_api_key: str | None = None  # OPENAI_API_KEY
