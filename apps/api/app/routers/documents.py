@@ -1,13 +1,13 @@
 import re
 import uuid
 
-from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request
 from fastapi.responses import PlainTextResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import delete, select, text
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_user_id_from_bearer
+from app.core.auth import assert_resource_ownership, get_current_user
 from app.core.config import settings
 from app.db.session import get_db
 from app.models import Document, DocumentChunk, InterviewSource, User
@@ -158,19 +158,28 @@ def _to_document_summary(d: Document, coverage: dict[str, dict]) -> DocumentSumm
     )
 
 
+async def _get_document_for_user(
+    db: AsyncSession,
+    document_id: uuid.UUID,
+    current_user: User,
+) -> Document:
+    result = await db.execute(select(Document).where(Document.id == document_id))
+    doc = result.scalar_one_or_none()
+    if not doc:
+        raise HTTPException(status_code=404, detail="Document not found")
+    assert_resource_ownership(doc, current_user)
+    return doc
+
+
 @router.get("", response_model=list[DocumentSummary])
 async def list_documents(
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List documents for a user."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     result = await db.execute(
         select(Document)
-        .where(Document.user_id == uid)
+        .where(Document.user_id == current_user.id)
         .order_by(Document.created_at.desc())
     )
     docs = result.scalars().all()
@@ -184,17 +193,12 @@ async def list_documents(
 
 @router.delete("", response_model=dict)
 async def delete_all_documents(
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete all documents for the current user. Removes files from storage."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     result = await db.execute(
-        select(Document).where(Document.user_id == uid)
+        select(Document).where(Document.user_id == current_user.id)
     )
     docs = result.scalars().all()
     storage = get_storage()
@@ -212,27 +216,14 @@ async def delete_all_documents(
 @router.delete("/{document_id}")
 async def delete_document(
     document_id: uuid.UUID,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Delete a document and its chunks. Removes file from storage if present.
     Interview sessions linked to this document are cascade-deleted.
     """
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
 
     s3_key = doc.s3_key
     await db.delete(doc)
@@ -251,29 +242,16 @@ async def delete_document(
 @router.get("/{document_id}", response_model=DocumentSummary)
 async def get_document(
     document_id: uuid.UUID,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get single document for status polling."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
     coverage_map = await _get_coverage_by_document(db, [doc.id])
     return _to_document_summary(doc, coverage_map.get(doc.id, {}))
 
 
 class PresignInput(BaseModel):
-    user_id: uuid.UUID | None = None  # optional when using Clerk Bearer token
     filename: str = Field(..., min_length=1)
     content_type: str = Field(..., pattern=r"^application/pdf$")
     file_size_bytes: int = Field(..., gt=0)
@@ -287,7 +265,6 @@ class PresignOutput(BaseModel):
 
 
 class ConfirmInput(BaseModel):
-    user_id: uuid.UUID | None = None
     document_id: uuid.UUID
     s3_key: str = Field(..., min_length=1)
 
@@ -318,24 +295,14 @@ def _make_s3_key(user_id: uuid.UUID, document_id: uuid.UUID, filename: str) -> s
 async def presign(
     body: PresignInput,
     request: Request,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get presigned PUT URL for PDF upload. Rate limit: 10/day."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     _validate_pdf_size(body.file_size_bytes)
 
-    result = await db.execute(select(User).where(User.id == uid))
-    user = result.scalar_one_or_none()
-    if not user:
-        user = User(id=uid, email=f"{uid}@temp.local")
-        db.add(user)
-        await db.flush()
-
     doc = Document(
-        user_id=uid,
+        user_id=current_user.id,
         filename=body.filename,
         s3_key="",  # Set below
         status="pending",
@@ -343,7 +310,7 @@ async def presign(
     db.add(doc)
     await db.flush()
 
-    s3_key = _make_s3_key(uid, doc.id, body.filename)
+    s3_key = _make_s3_key(current_user.id, doc.id, body.filename)
     doc.s3_key = s3_key
 
     storage = get_storage()
@@ -368,23 +335,13 @@ async def presign(
 @router.post("/confirm")
 async def confirm(
     body: ConfirmInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Verify document exists in storage and set status=uploaded."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == body.document_id,
-            Document.user_id == uid,
-            Document.s3_key == body.s3_key,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, body.document_id, current_user)
+    if doc.s3_key != body.s3_key:
+        raise HTTPException(status_code=400, detail="Invalid s3_key for document")
 
     storage = get_storage()
     if not storage.exists(body.s3_key):
@@ -416,7 +373,7 @@ async def upload_local(key: str, request: Request):
 
 
 class IngestInput(BaseModel):
-    user_id: uuid.UUID | None = None
+    pass
 
 
 @router.post("/{document_id}/ingest")
@@ -424,7 +381,7 @@ async def ingest(
     document_id: uuid.UUID,
     body: IngestInput,
     background_tasks: BackgroundTasks,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -432,18 +389,7 @@ async def ingest(
     Checks: doc ownership, status must be uploaded.
     Sets status=processing and runs ingestion in background.
     """
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
 
     if doc.status != "uploaded":
         raise HTTPException(
@@ -471,7 +417,7 @@ async def reingest(
     document_id: uuid.UUID,
     body: IngestInput,
     background_tasks: BackgroundTasks,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -479,18 +425,7 @@ async def reingest(
     Deletes existing chunks, resets status, runs ingestion.
     Doc must be uploaded or ready; file must exist in storage.
     """
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
 
     if doc.status not in ("uploaded", "ready"):
         raise HTTPException(
@@ -518,7 +453,7 @@ async def reingest(
 @router.get("/{document_id}/chunk-stats")
 async def chunk_stats(
     document_id: uuid.UUID,
-    user_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -526,15 +461,7 @@ async def chunk_stats(
     Returns total_chunks, low_signal_chunks, embedded_chunks, pages_covered,
     avg/min/max chunk length, sample_previews (first 120 chars per chunk).
     """
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == user_id,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    await _get_document_for_user(db, document_id, current_user)
 
     r = await db.execute(
         text("""
@@ -618,7 +545,6 @@ async def chunk_stats(
 # --- Interview Kit Sources (optional resume, company, notes) ---
 
 class AddTextSourceInput(BaseModel):
-    user_id: uuid.UUID | None = None
     source_type: str = Field(..., pattern=r"^(resume|company|notes)$")
     title: str = Field("", max_length=200)
     content: str = Field(..., min_length=1)
@@ -630,7 +556,6 @@ class AddTextSourceOutput(BaseModel):
 
 
 class PresignResumeInput(BaseModel):
-    user_id: uuid.UUID | None = None
     filename: str = Field(..., min_length=1)
     file_size_bytes: int = Field(..., gt=0)
 
@@ -642,17 +567,14 @@ class PresignResumeOutput(BaseModel):
 
 
 class ConfirmResumeInput(BaseModel):
-    user_id: uuid.UUID
     s3_key: str = Field(..., min_length=1)
 
 
 class IngestResumeInput(BaseModel):
-    user_id: uuid.UUID | None = None
     s3_key: str = Field(..., min_length=1)
 
 
 class AddFromUrlInput(BaseModel):
-    user_id: uuid.UUID | None = None
     url: str = Field(..., min_length=5)
     title: str = Field("Company / About", max_length=200)
 
@@ -664,7 +586,7 @@ class SourceSummary(BaseModel):
 
 
 class GapAnalysisInput(BaseModel):
-    user_id: uuid.UUID | None = None
+    pass
 
 
 class GapCitation(BaseModel):
@@ -730,22 +652,11 @@ def _make_source_s3_key(document_id: uuid.UUID, filename: str) -> str:
 async def add_text_source(
     document_id: uuid.UUID,
     body: AddTextSourceInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Add a pasted text source (resume, company, notes). Chunks and embeds."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail="Document must be ready (ingested)")
 
@@ -769,24 +680,12 @@ async def presign_resume(
     document_id: uuid.UUID,
     body: PresignResumeInput,
     request: Request,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get presigned URL for resume PDF upload."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     _validate_pdf_size(body.file_size_bytes)
-
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail="Document must be ready")
 
@@ -807,22 +706,11 @@ async def presign_resume(
 async def ingest_resume(
     document_id: uuid.UUID,
     body: IngestResumeInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm resume upload and ingest (extract, chunk, embed)."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    await _get_document_for_user(db, document_id, current_user)
 
     storage = get_storage()
     if not storage.exists(body.s3_key):
@@ -848,22 +736,11 @@ async def ingest_resume(
 async def add_from_url(
     document_id: uuid.UUID,
     body: AddFromUrlInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Fetch URL content and add as company source."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail="Document must be ready")
 
@@ -895,23 +772,11 @@ async def add_from_url(
 @router.get("/{document_id}/sources", response_model=list[SourceSummary])
 async def list_sources(
     document_id: uuid.UUID,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List Interview Kit sources for a document (excluding JD)."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    await _get_document_for_user(db, document_id, current_user)
 
     src_result = await db.execute(
         select(InterviewSource)
@@ -929,29 +794,17 @@ async def list_sources(
 async def gap_analysis(
     document_id: uuid.UUID,
     body: GapAnalysisInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Generate a retrieval-backed resume gap analysis for a job description."""
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    result = await db.execute(
-        select(Document).where(
-            Document.id == document_id,
-            Document.user_id == uid,
-        )
-    )
-    doc = result.scalar_one_or_none()
-    if not doc:
-        raise HTTPException(status_code=404, detail="Document not found")
+    doc = await _get_document_for_user(db, document_id, current_user)
     if doc.status != "ready":
         raise HTTPException(status_code=400, detail="Document must be ready")
     if doc.doc_domain != "job_description":
         raise HTTPException(status_code=400, detail="Gap analysis requires a job description document")
 
-    analysis = await generate_gap_analysis(db, document=doc, user_id=uid)
+    analysis = await generate_gap_analysis(db, document=doc, user_id=current_user.id)
     if not analysis.get("resume_sources_considered"):
         raise HTTPException(
             status_code=400,

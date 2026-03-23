@@ -1,12 +1,13 @@
-"""Clerk JWT verification and user resolution."""
+"""Clerk JWT verification and authenticated user helpers."""
 
 import logging
+from typing import Any
 import uuid
 from urllib.parse import urlparse
 
 import jwt
+from fastapi import Depends, HTTPException, Request
 from jwt import PyJWKClient
-from fastapi import Depends, Header, HTTPException, Request
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -17,8 +18,6 @@ from app.models import User
 logger = logging.getLogger(__name__)
 
 _jwks_client: PyJWKClient | None = None
-
-DEMO_USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 
 def _issuer_from_jwks_url(url: str) -> str:
@@ -44,8 +43,12 @@ def verify_clerk_token(token: str) -> str | None:
     """
     if not settings.clerk_jwks_url:
         return None
-    jwks = _get_jwks_client()
-    signing_key = jwks.get_signing_key_from_jwt(token)
+    try:
+        jwks = _get_jwks_client()
+        signing_key = jwks.get_signing_key_from_jwt(token)
+    except Exception as e:
+        logger.warning("Clerk token signing key lookup failed: %s", e)
+        return None
     issuer = settings.clerk_issuer or _issuer_from_jwks_url(settings.clerk_jwks_url)
     # Try with issuer first; fallback without issuer for some Clerk setups
     for verify_iss in (True, False):
@@ -74,8 +77,8 @@ def verify_clerk_token(token: str) -> str | None:
     return None
 
 
-async def get_or_create_user_by_clerk_id(db: AsyncSession, clerk_id: str) -> User | None:
-    """Get existing user by clerk_id, or create one. Returns User or None."""
+async def get_or_create_user_by_clerk_id(db: AsyncSession, clerk_id: str) -> User:
+    """Get an existing user by Clerk ID, or create one."""
     result = await db.execute(select(User).where(User.clerk_id == clerk_id))
     user = result.scalar_one_or_none()
     if user:
@@ -86,32 +89,44 @@ async def get_or_create_user_by_clerk_id(db: AsyncSession, clerk_id: str) -> Use
     return user
 
 
-async def get_user_id_from_bearer(
+async def get_current_user(
     request: Request,
     db: AsyncSession = Depends(get_db),
-) -> uuid.UUID | None:
+) -> User:
     """
-    If Authorization: Bearer token is valid, return the user_id.
-    Otherwise return None (caller should use body/query user_id with demo key).
-    Raises HTTPException 401 when Bearer is present but verification fails (so frontend can show a specific message).
+    Validate the Clerk Bearer token, resolve the database user, and create it if needed.
     """
     auth_header = request.headers.get("authorization")
-    if not auth_header or not auth_header.startswith("Bearer "):
-        return None
+    if not auth_header:
+        raise HTTPException(status_code=401, detail="Authentication required")
+    scheme, _, token = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not token.strip():
+        raise HTTPException(status_code=401, detail="Authentication required")
     if not settings.clerk_jwks_url:
         raise HTTPException(
             status_code=401,
             detail="Clerk is not configured. Add CLERK_JWKS_URL to your API environment.",
         )
-    token = auth_header[7:].strip()
-    clerk_id = verify_clerk_token(token)
+    clerk_id = verify_clerk_token(token.strip())
     if not clerk_id:
         raise HTTPException(
             status_code=401,
             detail="Invalid or expired session. Please sign in again.",
         )
     user = await get_or_create_user_by_clerk_id(db, clerk_id)
-    if user:
-        await db.commit()
-        return user.id
-    return None
+    await db.commit()
+    await db.refresh(user)
+    return user
+
+
+def assert_resource_ownership(resource: Any, current_user: User) -> None:
+    """Raise when a resource is missing or belongs to another user."""
+    if resource is None:
+        raise HTTPException(status_code=404, detail="Resource not found")
+
+    owner_id = getattr(resource, "user_id", None)
+    if owner_id is None:
+        raise ValueError("Resource does not expose user_id for ownership checks")
+
+    if owner_id != current_user.id:
+        raise HTTPException(status_code=403, detail="Forbidden")

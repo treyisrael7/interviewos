@@ -1,11 +1,5 @@
 import { clerkMiddleware, createRouteMatcher } from "@clerk/nextjs/server";
-import { NextRequest, NextResponse } from "next/server";
-
-const isPublicRoute = createRouteMatcher([
-  "/",
-  "/sign-in(.*)",
-  "/sign-up(.*)",
-]);
+import { NextFetchEvent, NextRequest, NextResponse } from "next/server";
 
 const isProtectedRoute = createRouteMatcher([
   "/dashboard(.*)",
@@ -57,7 +51,7 @@ function isPublicPath(request: NextRequest): boolean {
 
 export default function middleware(
   request: NextRequest,
-  context: { nextUrl: URL }
+  event: NextFetchEvent
 ) {
   // Always allow public paths through first - no auth required
   if (isPublicPath(request)) {
@@ -65,7 +59,7 @@ export default function middleware(
   }
 
   if (process.env.NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY) {
-    return clerkAuthMiddleware(request, context as Parameters<typeof clerkAuthMiddleware>[1]);
+    return clerkAuthMiddleware(request, event);
   }
   return basicAuthMiddleware(request);
 }

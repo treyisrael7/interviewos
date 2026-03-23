@@ -42,7 +42,7 @@ async def test_add_text_source_returns_401_without_auth(client, demo_key_off, cl
 
 
 @pytest.mark.asyncio
-async def test_add_text_source_success(client, demo_key_off, clerk_jwks_off, use_local_storage):
+async def test_add_text_source_success(client, demo_key_off, clerk_jwks_off, use_local_storage, force_auth):
     """POST add-text ingests text and returns source_id."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -53,6 +53,7 @@ async def test_add_text_source_success(client, demo_key_off, clerk_jwks_off, use
         user = User(id=user_id, email="addtext@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="addtext@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -70,7 +71,6 @@ async def test_add_text_source_success(client, demo_key_off, clerk_jwks_off, use
         resp = await client.post(
                 f"/documents/{doc_id}/sources/add-text",
                 json={
-                    "user_id": str(user_id),
                     "source_type": "resume",
                     "title": "Resume",
                     "content": "Python developer with 5 years experience.",
@@ -91,7 +91,7 @@ async def test_list_sources_returns_401_without_auth(client, demo_key_off, clerk
 
 
 @pytest.mark.asyncio
-async def test_list_sources_success(client, demo_key_off, clerk_jwks_off):
+async def test_list_sources_success(client, demo_key_off, clerk_jwks_off, force_auth):
     """GET list-sources returns sources for document."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewSource, User
@@ -102,6 +102,7 @@ async def test_list_sources_success(client, demo_key_off, clerk_jwks_off):
         user = User(id=user_id, email="listsrc@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="listsrc@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -122,7 +123,7 @@ async def test_list_sources_success(client, demo_key_off, clerk_jwks_off):
         db.add(src)
         await db.commit()
 
-    resp = await client.get(f"/documents/{doc_id}/sources?user_id={user_id}")
+    resp = await client.get(f"/documents/{doc_id}/sources")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)

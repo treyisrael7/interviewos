@@ -9,9 +9,10 @@ from pydantic import BaseModel, ConfigDict, Field
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import assert_resource_ownership, get_current_user
 from app.core.config import settings
 from app.db.session import get_db
-from app.models import Document
+from app.models import Document, User
 from app.services.retrieval import (
     embed_query,
     retrieve_chunks,
@@ -23,7 +24,6 @@ logger = logging.getLogger(__name__)
 
 
 class RetrieveInput(BaseModel):
-    user_id: uuid.UUID
     document_id: uuid.UUID
     query: str = Field(..., min_length=1)
     top_k: int = Field(6, ge=1, le=8)
@@ -67,6 +67,7 @@ class RetrieveOutput(BaseModel):
 @router.post("", response_model=RetrieveOutput)
 async def retrieve(
     body: RetrieveInput,
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -83,15 +84,11 @@ async def retrieve(
             },
         )
 
-    result = await db.execute(
-        select(Document).where(
-            Document.id == body.document_id,
-            Document.user_id == body.user_id,
-        )
-    )
+    result = await db.execute(select(Document).where(Document.id == body.document_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    assert_resource_ownership(doc, current_user)
 
     if doc.status != "ready":
         raise HTTPException(

@@ -8,15 +8,15 @@ from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_retrieve_requires_valid_input(client, demo_key_off):
+async def test_retrieve_requires_valid_input(client, demo_key_off, force_auth):
     """Retrieve returns 422 for missing or invalid body."""
+    await force_auth()
     resp = await client.post("/retrieve", json={})
     assert resp.status_code == 422
 
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "query": "",  # min_length=1
         },
@@ -25,12 +25,12 @@ async def test_retrieve_requires_valid_input(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_document_not_found(client, demo_key_off):
+async def test_retrieve_document_not_found(client, demo_key_off, force_auth):
     """Retrieve returns 404 for unknown document."""
+    await force_auth()
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "query": "test query",
             "top_k": 3,
@@ -40,7 +40,7 @@ async def test_retrieve_document_not_found(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_rejects_top_k_exceeds_max(client, demo_key_off, monkeypatch):
+async def test_retrieve_rejects_top_k_exceeds_max(client, demo_key_off, monkeypatch, force_auth):
     """Retrieve returns 400 when top_k > TOP_K_MAX."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -52,6 +52,7 @@ async def test_retrieve_rejects_top_k_exceeds_max(client, demo_key_off, monkeypa
         user = User(id=user_id, email="retrieve-test@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="retrieve-test@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -67,7 +68,6 @@ async def test_retrieve_rejects_top_k_exceeds_max(client, demo_key_off, monkeypa
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "test",
             "top_k": 6,  # > top_k_max (5), but <= Pydantic le=8 so we hit the handler
@@ -79,7 +79,7 @@ async def test_retrieve_rejects_top_k_exceeds_max(client, demo_key_off, monkeypa
 
 
 @pytest.mark.asyncio
-async def test_retrieve_rejects_document_not_ready(client, demo_key_off):
+async def test_retrieve_rejects_document_not_ready(client, demo_key_off, force_auth):
     """Retrieve returns 400 when document status is not ready."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -89,6 +89,7 @@ async def test_retrieve_rejects_document_not_ready(client, demo_key_off):
         user = User(id=user_id, email="retrieve-test2@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="retrieve-test2@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -104,7 +105,6 @@ async def test_retrieve_rejects_document_not_ready(client, demo_key_off):
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "test",
             "top_k": 3,
@@ -115,7 +115,7 @@ async def test_retrieve_rejects_document_not_ready(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_success_returns_chunks(client, demo_key_off, monkeypatch):
+async def test_retrieve_success_returns_chunks(client, demo_key_off, monkeypatch, force_auth):
     """Retrieve returns metadata-rich chunks: text, score, sourceType, sourceTitle, page, chunkId."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -136,6 +136,7 @@ async def test_retrieve_success_returns_chunks(client, demo_key_off, monkeypatch
         user = User(id=user_id, email="retrieve-success@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="retrieve-success@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -172,7 +173,6 @@ async def test_retrieve_success_returns_chunks(client, demo_key_off, monkeypatch
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "machine learning",
             "top_k": 3,
@@ -193,7 +193,7 @@ async def test_retrieve_success_returns_chunks(client, demo_key_off, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_retrieve_returns_section_type_for_jd_doc(client, demo_key_off, monkeypatch):
+async def test_retrieve_returns_section_type_for_jd_doc(client, demo_key_off, monkeypatch, force_auth):
     """Retrieve returns section_type in chunks when doc has doc_domain=job_description."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -213,6 +213,7 @@ async def test_retrieve_returns_section_type_for_jd_doc(client, demo_key_off, mo
         user = User(id=user_id, email="jd-retrieve@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="jd-retrieve@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -251,7 +252,6 @@ async def test_retrieve_returns_section_type_for_jd_doc(client, demo_key_off, mo
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "what skills are required?",
             "top_k": 3,
@@ -265,7 +265,7 @@ async def test_retrieve_returns_section_type_for_jd_doc(client, demo_key_off, mo
 
 
 @pytest.mark.asyncio
-async def test_retrieve_section_types_filter(client, demo_key_off, monkeypatch):
+async def test_retrieve_section_types_filter(client, demo_key_off, monkeypatch, force_auth):
     """Retrieve respects optional section_types filter."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -285,6 +285,7 @@ async def test_retrieve_section_types_filter(client, demo_key_off, monkeypatch):
         user = User(id=user_id, email="filter-test@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="filter-test@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -323,7 +324,6 @@ async def test_retrieve_section_types_filter(client, demo_key_off, monkeypatch):
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "skills",
             "top_k": 5,
@@ -337,7 +337,7 @@ async def test_retrieve_section_types_filter(client, demo_key_off, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch):
+async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch, force_auth):
     """Retrieve respects optional source_types filter; returns only chunks from matching sources."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -357,6 +357,7 @@ async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch):
         user = User(id=user_id, email="source-filter@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="source-filter@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -414,7 +415,6 @@ async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch):
     resp = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "skills",
             "top_k": 5,
@@ -432,7 +432,6 @@ async def test_retrieve_source_types_filter(client, demo_key_off, monkeypatch):
     resp2 = await client.post(
         "/retrieve",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "query": "skills",
             "top_k": 5,

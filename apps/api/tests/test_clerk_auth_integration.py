@@ -6,7 +6,7 @@ import pytest
 
 from app.core.config import settings
 from app.main import app
-from app.core.auth import get_user_id_from_bearer
+from app.core.auth import get_current_user
 
 
 @pytest.fixture
@@ -16,7 +16,7 @@ def clerk_jwks_off(monkeypatch):
 
 @pytest.mark.asyncio
 async def test_ask_returns_401_when_no_user_id_and_no_bearer(client, demo_key_off, clerk_jwks_off):
-    """POST /ask returns 401 when neither user_id in body nor Bearer token provided."""
+    """POST /ask returns 401 when no Bearer token is provided."""
     resp = await client.post(
         "/ask",
         json={
@@ -30,7 +30,7 @@ async def test_ask_returns_401_when_no_user_id_and_no_bearer(client, demo_key_of
 
 @pytest.mark.asyncio
 async def test_ask_succeeds_with_user_id_in_body(client, demo_key_off, clerk_jwks_off, monkeypatch):
-    """POST /ask accepts user_id in body (demo mode) when no Bearer."""
+    """POST /ask ignores client-supplied user_id and still requires auth."""
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     resp = await client.post(
         "/ask",
@@ -40,20 +40,21 @@ async def test_ask_succeeds_with_user_id_in_body(client, demo_key_off, clerk_jwk
             "question": "What is the salary?",
         },
     )
-    # 404 = doc not found (we passed auth)
-    assert resp.status_code == 404
+    assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
 async def test_interview_sessions_returns_401_without_user_id(client, demo_key_off, clerk_jwks_off):
-    """GET /interview/sessions returns 401 when user_id not in query and no Bearer."""
+    """GET /interview/sessions returns 401 when no Bearer token is provided."""
     resp = await client.get("/interview/sessions")
     assert resp.status_code == 401
 
 
 @pytest.mark.asyncio
-async def test_interview_sessions_succeeds_with_user_id_query(client, demo_key_off, clerk_jwks_off):
-    """GET /interview/sessions accepts user_id in query (demo mode)."""
+async def test_interview_sessions_succeeds_with_authenticated_user(
+    client, demo_key_off, clerk_jwks_off, force_auth
+):
+    """GET /interview/sessions uses the authenticated user instead of a query param."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewQuestion, InterviewSession, User
 
@@ -62,6 +63,7 @@ async def test_interview_sessions_succeeds_with_user_id_query(client, demo_key_o
         user = User(id=user_id, email="sessions-auth@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="sessions-auth@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -89,25 +91,26 @@ async def test_interview_sessions_succeeds_with_user_id_query(client, demo_key_o
         db.add(q)
         await db.commit()
 
-    resp = await client.get(f"/interview/sessions?user_id={user_id}")
+    resp = await client.get("/interview/sessions")
     assert resp.status_code == 200
     assert isinstance(resp.json(), list)
 
 
 @pytest.mark.asyncio
 async def test_bearer_token_via_dependency_override(client, demo_key_off, clerk_jwks_off):
-    """When Bearer present, dependency override can inject user_id (simulates valid Clerk)."""
+    """A dependency override can inject the authenticated user (simulates valid Clerk)."""
     from fastapi import Request
     from httpx import ASGITransport, AsyncClient
+    from app.models import User
 
     user_id = uuid.uuid4()
 
     async def override_bearer(request: Request):
         if request.headers.get("authorization", "").startswith("Bearer "):
-            return user_id
-        return None
+            return User(id=user_id, email="bearer-test@t.local")
+        raise AssertionError("Authorization header missing in override")
 
-    app.dependency_overrides[get_user_id_from_bearer] = override_bearer
+    app.dependency_overrides[get_current_user] = override_bearer
 
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -141,4 +144,4 @@ async def test_bearer_token_via_dependency_override(client, demo_key_off, clerk_
             )
             assert resp.status_code == 200
     finally:
-        app.dependency_overrides.pop(get_user_id_from_bearer, None)
+        app.dependency_overrides.pop(get_current_user, None)

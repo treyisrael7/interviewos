@@ -8,7 +8,7 @@ from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_gap_analysis_requires_resume_source(client, demo_key_off):
+async def test_gap_analysis_requires_resume_source(client, demo_key_off, force_auth):
     """Gap analysis returns 400 when no attached or account-level resume exists."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewSource, User
@@ -17,6 +17,7 @@ async def test_gap_analysis_requires_resume_source(client, demo_key_off):
     async with async_session_maker() as db:
         db.add(User(id=user_id, email="gap-no-resume@t.local"))
         await db.commit()
+    await force_auth(user_id=user_id, email="gap-no-resume@t.local")
 
     async with async_session_maker() as db:
         doc = Document(
@@ -40,14 +41,14 @@ async def test_gap_analysis_requires_resume_source(client, demo_key_off):
 
     resp = await client.post(
         f"/documents/{doc_id}/gap-analysis",
-        json={"user_id": str(user_id)},
+        json={},
     )
     assert resp.status_code == 400
     assert "resume source" in resp.json()["detail"].lower()
 
 
 @pytest.mark.asyncio
-async def test_gap_analysis_uses_attached_resume_source(client, demo_key_off, monkeypatch):
+async def test_gap_analysis_uses_attached_resume_source(client, demo_key_off, monkeypatch, force_auth):
     """Gap analysis classifies attached resume evidence while preserving citations."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -62,6 +63,7 @@ async def test_gap_analysis_uses_attached_resume_source(client, demo_key_off, mo
     async with async_session_maker() as db:
         db.add(User(id=user_id, email="gap-attached@t.local"))
         await db.commit()
+    await force_auth(user_id=user_id, email="gap-attached@t.local")
 
     async with async_session_maker() as db:
         doc = Document(
@@ -129,7 +131,7 @@ async def test_gap_analysis_uses_attached_resume_source(client, demo_key_off, mo
 
     resp = await client.post(
         f"/documents/{doc_id}/gap-analysis",
-        json={"user_id": str(user_id)},
+        json={},
     )
     assert resp.status_code == 200
     data = resp.json()
@@ -145,7 +147,7 @@ async def test_gap_analysis_uses_attached_resume_source(client, demo_key_off, mo
 
 
 @pytest.mark.asyncio
-async def test_gap_analysis_uses_account_level_resume(client, demo_key_off, monkeypatch):
+async def test_gap_analysis_uses_account_level_resume(client, demo_key_off, monkeypatch, force_auth):
     """Gap analysis falls back to the account-level resume document when no attached resume exists."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -160,6 +162,7 @@ async def test_gap_analysis_uses_account_level_resume(client, demo_key_off, monk
     async with async_session_maker() as db:
         db.add(User(id=user_id, email="gap-account@t.local"))
         await db.commit()
+    await force_auth(user_id=user_id, email="gap-account@t.local")
 
     async with async_session_maker() as db:
         jd_doc = Document(
@@ -222,7 +225,7 @@ async def test_gap_analysis_uses_account_level_resume(client, demo_key_off, monk
 
     resp = await client.post(
         f"/documents/{jd_doc.id}/gap-analysis",
-        json={"user_id": str(user_id)},
+        json={},
     )
     assert resp.status_code == 200
     data = resp.json()

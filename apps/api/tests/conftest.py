@@ -6,7 +6,9 @@ import uuid
 import pytest
 from httpx import ASGITransport, AsyncClient
 
+from app.core.auth import get_current_user
 from app.main import app
+from app.models import User
 from app.core.rate_limit import clear_store
 
 
@@ -25,6 +27,30 @@ async def client():
         base_url="http://test",
     ) as ac:
         yield ac
+
+
+@pytest.fixture
+def force_auth():
+    """Override auth dependency with a concrete current user for a test."""
+
+    async def _force(
+        *,
+        user_id: uuid.UUID | None = None,
+        email: str | None = None,
+    ) -> User:
+        resolved_id = user_id or uuid.uuid4()
+        resolved_email = email or f"{resolved_id}@test.local"
+
+        current_user = User(id=resolved_id, email=resolved_email)
+
+        async def _override() -> User:
+            return current_user
+
+        app.dependency_overrides[get_current_user] = _override
+        return current_user
+
+    yield _force
+    app.dependency_overrides.pop(get_current_user, None)
 
 
 @pytest.fixture(autouse=True)

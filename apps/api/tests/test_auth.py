@@ -6,8 +6,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from app.core.auth import (
+    get_current_user,
     get_or_create_user_by_clerk_id,
-    get_user_id_from_bearer,
     verify_clerk_token,
 )
 from app.core.config import settings
@@ -82,12 +82,12 @@ async def test_get_or_create_user_creates_new():
         await db.commit()
 
 
-# --- get_user_id_from_bearer ---
+# --- get_current_user ---
 
 
 @pytest.mark.asyncio
-async def test_get_user_id_from_bearer_invalid_token_returns_none(monkeypatch):
-    """get_user_id_from_bearer returns None when verify_clerk_token fails."""
+async def test_get_current_user_rejects_invalid_token(monkeypatch):
+    """get_current_user returns 401 when verify_clerk_token fails."""
     monkeypatch.setattr(settings, "clerk_jwks_url", "https://test.clerk.accounts.dev/.well-known/jwks.json")
 
     with patch("app.core.auth.verify_clerk_token", return_value=None):
@@ -96,8 +96,8 @@ async def test_get_user_id_from_bearer_invalid_token_returns_none(monkeypatch):
         app = FastAPI()
 
         @app.get("/test")
-        async def route(uid: uuid.UUID | None = Depends(get_user_id_from_bearer)):
-            return {"user_id": str(uid) if uid else None}
+        async def route(user=Depends(get_current_user)):
+            return {"user_id": str(user.id)}
 
         from httpx import ASGITransport, AsyncClient
         async with AsyncClient(
@@ -105,6 +105,24 @@ async def test_get_user_id_from_bearer_invalid_token_returns_none(monkeypatch):
             base_url="http://test",
         ) as client:
             resp = await client.get("/test", headers={"Authorization": "Bearer invalid-token"})
-            # With mocked verify returning None, dependency returns None
-            assert resp.status_code == 200
-            assert resp.json()["user_id"] is None
+            assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_requires_bearer_token():
+    """get_current_user returns 401 when the Authorization header is missing."""
+    from fastapi import FastAPI, Depends
+    from httpx import ASGITransport, AsyncClient
+
+    app = FastAPI()
+
+    @app.get("/test")
+    async def route(user=Depends(get_current_user)):
+        return {"user_id": str(user.id)}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get("/test")
+        assert resp.status_code == 401

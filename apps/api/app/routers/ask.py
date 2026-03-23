@@ -4,15 +4,15 @@ import logging
 import uuid
 
 from fastapi import APIRouter, Depends, HTTPException
-from app.core.auth import get_user_id_from_bearer
 from pydantic import BaseModel, Field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import assert_resource_ownership, get_current_user
 from app.core.config import settings
 from app.db.session import get_db
-from app.models import Document
+from app.models import Document, User
 from app.services.qa import generate_grounded_answer
 from app.services.retrieval import (
     embed_query,
@@ -27,7 +27,6 @@ ASK_TOP_K = 6
 
 
 class AskInput(BaseModel):
-    user_id: uuid.UUID | None = None
     document_id: uuid.UUID
     question: str = Field(..., min_length=1)
 
@@ -46,7 +45,7 @@ class AskOutput(BaseModel):
 @router.post("", response_model=AskOutput)
 async def ask(
     body: AskInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -54,19 +53,11 @@ async def ask(
     Retrieves relevant excerpts, builds a grounded prompt, calls OpenAI chat completion.
     Returns answer with citation markers [pN-cM] and a citations list.
     """
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    # Validate document
-    result = await db.execute(
-        select(Document).where(
-            Document.id == body.document_id,
-            Document.user_id == uid,
-        )
-    )
+    result = await db.execute(select(Document).where(Document.id == body.document_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    assert_resource_ownership(doc, current_user)
 
     if doc.status != "ready":
         raise HTTPException(

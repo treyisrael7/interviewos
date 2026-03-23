@@ -4,16 +4,16 @@ import asyncio
 import logging
 import uuid
 
-from fastapi import APIRouter, Depends, HTTPException, Query
-from app.core.auth import get_user_id_from_bearer
+from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel, Field
 
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.auth import assert_resource_ownership, get_current_user
 from app.core.config import settings
 from app.db.session import get_db
-from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession
+from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
 from app.services.interview import (
     evaluate_answer_with_retrieval,
     generate_questions,
@@ -35,7 +35,6 @@ QUESTION_MIX_PRESETS = {
 }
 
 class InterviewGenerateInput(BaseModel):
-    user_id: uuid.UUID | None = None
     document_id: uuid.UUID
     difficulty: str = Field("junior", pattern="^(junior|mid|senior)$")
     num_questions: int = Field(8, ge=1, le=10)
@@ -68,7 +67,6 @@ class InterviewGenerateOutput(BaseModel):
 
 
 class InterviewEvaluateInput(BaseModel):
-    user_id: uuid.UUID | None = None
     document_id: uuid.UUID
     question_id: uuid.UUID
     answer_text: str = Field(..., min_length=1)
@@ -164,7 +162,7 @@ def _from_rubric(rubric: dict) -> tuple[list[str], list[dict], list[str], str, l
 @router.post("/generate", response_model=InterviewGenerateOutput)
 async def generate(
     body: InterviewGenerateInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
@@ -172,18 +170,11 @@ async def generate(
     Creates a new session and attaches questions.
     Requires doc_domain=job_description and status=ready.
     """
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(Document).where(
-            Document.id == body.document_id,
-            Document.user_id == uid,
-        )
-    )
+    result = await db.execute(select(Document).where(Document.id == body.document_id))
     doc = result.scalar_one_or_none()
     if not doc:
         raise HTTPException(status_code=404, detail="Document not found")
+    assert_resource_ownership(doc, current_user)
 
     if doc.status != "ready":
         raise HTTPException(
@@ -252,7 +243,7 @@ async def generate(
 
     # Create session and questions (store effective profile + overrides)
     session = InterviewSession(
-        user_id=uid,
+        user_id=current_user.id,
         document_id=body.document_id,
         mode="role_driven",
         difficulty=body.difficulty,
@@ -325,16 +316,13 @@ async def generate(
 @router.post("/evaluate", response_model=InterviewEvaluateOutput)
 async def evaluate(
     body: InterviewEvaluateInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """
     Evaluate a candidate's answer against the stored question rubric and evidence.
     Saves answer + score + feedback. Requires question to belong to user's document.
     """
-    uid = user_id_from_auth or body.user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     if not settings.openai_api_key:
         raise HTTPException(
             status_code=503,
@@ -347,7 +335,6 @@ async def evaluate(
         .join(InterviewSession, InterviewQuestion.session_id == InterviewSession.id)
         .where(
             InterviewQuestion.id == body.question_id,
-            InterviewSession.user_id == uid,
             InterviewSession.document_id == body.document_id,
         )
     )
@@ -357,6 +344,7 @@ async def evaluate(
 
     question = row[0]
     session = row[1]
+    assert_resource_ownership(session, current_user)
     bullets, evidence, _, focus_area, must_mention, comp_id, comp_label, evidence_chunk_ids = _from_rubric(question.rubric_json)
     role_profile = _to_role_profile_out(getattr(session, "role_profile_json", None))
     rp_dict = (
@@ -374,7 +362,7 @@ async def evaluate(
         evaluation = await evaluate_answer_with_retrieval(
             db=db,
             document_id=session.document_id,
-            user_id=uid,
+            user_id=current_user.id,
             question=question.question,
             question_type=question.type if question.type != "technical" else "role_specific",
             focus_area=focus_area,
@@ -486,14 +474,10 @@ class QuestionDetail(BaseModel):
 
 @router.get("/sessions", response_model=list[SessionSummary])
 async def list_sessions(
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """List interview sessions for a user."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     from sqlalchemy import func
 
     result = await db.execute(
@@ -502,7 +486,7 @@ async def list_sessions(
             func.count(InterviewQuestion.id).label("question_count"),
         )
         .outerjoin(InterviewQuestion, InterviewQuestion.session_id == InterviewSession.id)
-        .where(InterviewSession.user_id == uid)
+        .where(InterviewSession.user_id == current_user.id)
         .group_by(InterviewSession.id)
         .order_by(InterviewSession.created_at.desc())
     )
@@ -525,23 +509,15 @@ async def list_sessions(
 @router.get("/sessions/{session_id}", response_model=SessionDetail)
 async def get_session(
     session_id: uuid.UUID,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a session with its questions. Validates user ownership."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-    result = await db.execute(
-        select(InterviewSession).where(
-            InterviewSession.id == session_id,
-            InterviewSession.user_id == uid,
-        )
-    )
+    result = await db.execute(select(InterviewSession).where(InterviewSession.id == session_id))
     session = result.scalar_one_or_none()
     if not session:
         raise HTTPException(status_code=404, detail="Session not found")
+    assert_resource_ownership(session, current_user)
 
     q_result = await db.execute(
         select(InterviewQuestion)
@@ -578,20 +554,15 @@ async def get_session(
 @router.get("/questions/{question_id}", response_model=QuestionDetail)
 async def get_question(
     question_id: uuid.UUID,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
-    user_id: uuid.UUID | None = Query(None),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Get a question by ID. Validates user ownership via session."""
-    uid = user_id_from_auth or user_id
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     result = await db.execute(
         select(InterviewQuestion, InterviewSession)
         .join(InterviewSession, InterviewQuestion.session_id == InterviewSession.id)
         .where(
             InterviewQuestion.id == question_id,
-            InterviewSession.user_id == uid,
         )
     )
     row = result.one_or_none()
@@ -599,6 +570,7 @@ async def get_question(
         raise HTTPException(status_code=404, detail="Question not found")
 
     question = row[0]
+    assert_resource_ownership(row[1], current_user)
     bullets, evidence, key_topics, focus_area, _, comp_id, comp_label, _ = _from_rubric(question.rubric_json)
 
     return QuestionDetail(

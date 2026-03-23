@@ -8,15 +8,15 @@ from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_requires_valid_input(client, demo_key_off):
+async def test_interview_generate_requires_valid_input(client, demo_key_off, force_auth):
     """Generate returns 422 for invalid body."""
+    await force_auth()
     resp = await client.post("/interview/generate", json={})
     assert resp.status_code == 422
 
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "difficulty": "invalid",
         },
@@ -25,12 +25,12 @@ async def test_interview_generate_requires_valid_input(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_document_not_found(client, demo_key_off):
+async def test_interview_generate_document_not_found(client, demo_key_off, force_auth):
     """Generate returns 404 for unknown document."""
+    await force_auth()
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "difficulty": "junior",
         },
@@ -39,7 +39,7 @@ async def test_interview_generate_document_not_found(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_rejects_non_jd_document(client, demo_key_off):
+async def test_interview_generate_rejects_non_jd_document(client, demo_key_off, force_auth):
     """Generate returns 400 when doc_domain is not job_description."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -49,6 +49,7 @@ async def test_interview_generate_rejects_non_jd_document(client, demo_key_off):
         user = User(id=user_id, email="interview-nonjd@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="interview-nonjd@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -65,7 +66,6 @@ async def test_interview_generate_rejects_non_jd_document(client, demo_key_off):
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "mode": "technical",
             "difficulty": "junior",
@@ -76,7 +76,7 @@ async def test_interview_generate_rejects_non_jd_document(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_rejects_document_not_ready(client, demo_key_off):
+async def test_interview_generate_rejects_document_not_ready(client, demo_key_off, force_auth):
     """Generate returns 400 when document status is not ready."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -86,6 +86,7 @@ async def test_interview_generate_rejects_document_not_ready(client, demo_key_of
         user = User(id=user_id, email="interview-pending@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="interview-pending@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -102,7 +103,6 @@ async def test_interview_generate_rejects_document_not_ready(client, demo_key_of
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "difficulty": "junior",
         },
@@ -112,7 +112,7 @@ async def test_interview_generate_rejects_document_not_ready(client, demo_key_of
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, monkeypatch):
+async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, monkeypatch, force_auth):
     """Generate returns 400 when no evidence chunks found for mode."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -131,6 +131,7 @@ async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, 
         user = User(id=user_id, email="interview-noev@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="interview-noev@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -166,7 +167,6 @@ async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, 
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "difficulty": "junior",
         },
@@ -177,7 +177,7 @@ async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, 
 
 
 @pytest.mark.asyncio
-async def test_interview_generate_success_creates_session(client, demo_key_off, monkeypatch):
+async def test_interview_generate_success_creates_session(client, demo_key_off, monkeypatch, force_auth):
     """Generate creates a session and questions."""
     from app.db.base import async_session_maker
     from app.models import Document, DocumentChunk, InterviewSource, User
@@ -233,6 +233,7 @@ async def test_interview_generate_success_creates_session(client, demo_key_off, 
         user = User(id=user_id, email="interview-gen@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="interview-gen@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -274,7 +275,6 @@ async def test_interview_generate_success_creates_session(client, demo_key_off, 
     resp = await client.post(
         "/interview/generate",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "difficulty": "junior",
             "num_questions": 2,
@@ -300,15 +300,15 @@ async def test_interview_generate_success_creates_session(client, demo_key_off, 
 
 
 @pytest.mark.asyncio
-async def test_interview_evaluate_requires_valid_input(client, demo_key_off):
+async def test_interview_evaluate_requires_valid_input(client, demo_key_off, force_auth):
     """Evaluate returns 422 for invalid body."""
+    await force_auth()
     resp = await client.post("/interview/evaluate", json={})
     assert resp.status_code == 422
 
     resp = await client.post(
         "/interview/evaluate",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "question_id": "11111111-1111-1111-1111-111111111111",
             "answer_text": "",  # min_length=1
@@ -318,13 +318,13 @@ async def test_interview_evaluate_requires_valid_input(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_interview_evaluate_question_not_found(client, demo_key_off, monkeypatch):
+async def test_interview_evaluate_question_not_found(client, demo_key_off, monkeypatch, force_auth):
     """Evaluate returns 404 for unknown question."""
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    await force_auth()
     resp = await client.post(
         "/interview/evaluate",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "question_id": "11111111-1111-1111-1111-111111111111",
             "answer_text": "I have 5 years of Python experience.",
@@ -334,7 +334,7 @@ async def test_interview_evaluate_question_not_found(client, demo_key_off, monke
 
 
 @pytest.mark.asyncio
-async def test_interview_evaluate_success(client, demo_key_off, monkeypatch):
+async def test_interview_evaluate_success(client, demo_key_off, monkeypatch, force_auth):
     """Evaluate returns score, strengths, gaps, improved_answer, follow_up_questions, citations."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewQuestion, InterviewSession, User
@@ -361,6 +361,7 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch):
         user = User(id=user_id, email="eval-test@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="eval-test@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -398,7 +399,6 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch):
     resp = await client.post(
         "/interview/evaluate",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "question_id": str(question_id),
             "answer_text": "I have 5 years of Python experience.",
@@ -422,7 +422,7 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_list_sessions(client, demo_key_off):
+async def test_list_sessions(client, demo_key_off, force_auth):
     """GET /interview/sessions returns sessions for user."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewQuestion, InterviewSession, User
@@ -432,6 +432,7 @@ async def test_list_sessions(client, demo_key_off):
         user = User(id=user_id, email="sessions@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="sessions@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -460,7 +461,7 @@ async def test_list_sessions(client, demo_key_off):
         db.add(q)
         await db.commit()
 
-    resp = await client.get(f"/interview/sessions?user_id={user_id}")
+    resp = await client.get("/interview/sessions")
     assert resp.status_code == 200
     data = resp.json()
     assert isinstance(data, list)
@@ -472,7 +473,7 @@ async def test_list_sessions(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_get_session(client, demo_key_off):
+async def test_get_session(client, demo_key_off, force_auth):
     """GET /interview/sessions/{id} returns session with questions."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewQuestion, InterviewSession, User
@@ -482,6 +483,7 @@ async def test_get_session(client, demo_key_off):
         user = User(id=user_id, email="get-session@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="get-session@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -514,7 +516,7 @@ async def test_get_session(client, demo_key_off):
         db.add(q)
         await db.commit()
 
-    resp = await client.get(f"/interview/sessions/{session_id}?user_id={user_id}")
+    resp = await client.get(f"/interview/sessions/{session_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == str(session_id)
@@ -524,7 +526,7 @@ async def test_get_session(client, demo_key_off):
 
 
 @pytest.mark.asyncio
-async def test_get_question(client, demo_key_off):
+async def test_get_question(client, demo_key_off, force_auth):
     """GET /interview/questions/{id} returns question."""
     from app.db.base import async_session_maker
     from app.models import Document, InterviewQuestion, InterviewSession, User
@@ -534,6 +536,7 @@ async def test_get_question(client, demo_key_off):
         user = User(id=user_id, email="get-q@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="get-q@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -568,7 +571,7 @@ async def test_get_question(client, demo_key_off):
         session_id = session.id
         await db.commit()
 
-    resp = await client.get(f"/interview/questions/{question_id}?user_id={user_id}")
+    resp = await client.get(f"/interview/questions/{question_id}")
     assert resp.status_code == 200
     data = resp.json()
     assert data["id"] == str(question_id)

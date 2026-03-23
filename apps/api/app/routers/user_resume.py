@@ -7,7 +7,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.core.auth import get_user_id_from_bearer
+from app.core.auth import get_current_user
 from app.db.session import get_db
 from app.models import Document, InterviewSource, User
 from app.services.source_ingestion import ingest_resume_pdf
@@ -50,17 +50,13 @@ class ConfirmInput(BaseModel):
 
 @router.get("/resume")
 async def get_resume_status(
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Check if user has an account-level resume."""
-    uid = user_id_from_auth
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     result = await db.execute(
         select(Document).where(
-            Document.user_id == uid,
+            Document.user_id == current_user.id,
             Document.doc_domain == USER_RESUME_DOC_DOMAIN,
         )
     )
@@ -72,18 +68,15 @@ async def get_resume_status(
 async def presign_user_resume(
     body: PresignInput,
     request: Request,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
 ):
     """Get presigned URL for account resume upload."""
-    uid = user_id_from_auth
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
     _validate_pdf_size(body.file_size_bytes)
 
     if not body.filename.lower().endswith(".pdf"):
         raise HTTPException(status_code=400, detail="Only PDF files are accepted")
 
-    s3_key = _user_resume_s3_key(uid)
+    s3_key = _user_resume_s3_key(current_user.id)
     storage = get_storage()
     upload_url, method = storage.generate_presigned_put(
         key=s3_key,
@@ -99,15 +92,11 @@ async def presign_user_resume(
 @router.post("/resume")
 async def confirm_user_resume(
     body: ConfirmInput,
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Confirm resume upload and ingest. Creates or replaces user's account resume."""
-    uid = user_id_from_auth
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
-    expected_key = _user_resume_s3_key(uid)
+    expected_key = _user_resume_s3_key(current_user.id)
     if body.s3_key != expected_key:
         raise HTTPException(status_code=400, detail="Invalid s3_key for user resume")
 
@@ -117,7 +106,7 @@ async def confirm_user_resume(
 
     result = await db.execute(
         select(Document).where(
-            Document.user_id == uid,
+            Document.user_id == current_user.id,
             Document.doc_domain == USER_RESUME_DOC_DOMAIN,
         )
     )
@@ -128,15 +117,8 @@ async def confirm_user_resume(
         await db.commit()
         document_id = doc.id
     else:
-        result = await db.execute(select(User).where(User.id == uid))
-        user = result.scalar_one_or_none()
-        if not user:
-            user = User(id=uid, email=f"{uid}@temp.local")
-            db.add(user)
-            await db.flush()
-
         doc = Document(
-            user_id=uid,
+            user_id=current_user.id,
             filename=USER_RESUME_FILENAME,
             s3_key=body.s3_key,
             status="uploaded",
@@ -163,17 +145,13 @@ async def confirm_user_resume(
 
 @router.delete("/resume")
 async def delete_user_resume(
-    user_id_from_auth: uuid.UUID | None = Depends(get_user_id_from_bearer),
+    current_user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_db),
 ):
     """Delete user's account resume."""
-    uid = user_id_from_auth
-    if uid is None:
-        raise HTTPException(status_code=401, detail="Authentication required")
-
     result = await db.execute(
         select(Document).where(
-            Document.user_id == uid,
+            Document.user_id == current_user.id,
             Document.doc_domain == USER_RESUME_DOC_DOMAIN,
         )
     )

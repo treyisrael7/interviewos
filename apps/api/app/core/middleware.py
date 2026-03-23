@@ -17,7 +17,7 @@ def _path_matches_route(path: str) -> str | None:
 
 
 class DemoGateMiddleware(BaseHTTPMiddleware):
-    """Require x-demo-key header on non-public routes when DEMO_KEY is set."""
+    """Optional demo gate; never provides user identity."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         if not settings.demo_key:
@@ -46,7 +46,7 @@ class DemoGateMiddleware(BaseHTTPMiddleware):
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    """In-memory rate limiting per IP and optional user_id."""
+    """In-memory rate limiting keyed by IP only."""
 
     async def dispatch(self, request: Request, call_next) -> Response:
         path = request.url.path
@@ -55,12 +55,10 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             return await call_next(request)
 
         ip = request.client.host if request.client else "0.0.0.0"
-        user_id = request.headers.get("x-user-id")
-
         limit, window_seconds = RATE_LIMITS[route]
         window_name = "hour" if window_seconds == 3600 else "day"
 
-        allowed, retry_after = check_rate_limit(ip, path, user_id)
+        allowed, retry_after = check_rate_limit(ip, path, None)
 
         if not allowed:
             body = json.dumps({

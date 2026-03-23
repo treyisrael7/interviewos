@@ -9,9 +9,10 @@ from app.core.config import settings
 
 
 @pytest.mark.asyncio
-async def test_ask_requires_valid_input(client, demo_key_off, monkeypatch):
+async def test_ask_requires_valid_input(client, demo_key_off, monkeypatch, force_auth):
     """Ask returns 422 for missing or invalid body."""
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    await force_auth()
 
     resp = await client.post("/ask", json={})
     assert resp.status_code == 422
@@ -19,7 +20,6 @@ async def test_ask_requires_valid_input(client, demo_key_off, monkeypatch):
     resp = await client.post(
         "/ask",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "question": "",  # min_length=1
         },
@@ -28,14 +28,14 @@ async def test_ask_requires_valid_input(client, demo_key_off, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ask_document_not_found(client, demo_key_off, monkeypatch):
+async def test_ask_document_not_found(client, demo_key_off, monkeypatch, force_auth):
     """Ask returns 404 for unknown document."""
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+    await force_auth()
 
     resp = await client.post(
         "/ask",
         json={
-            "user_id": "11111111-1111-1111-1111-111111111111",
             "document_id": "11111111-1111-1111-1111-111111111111",
             "question": "What is the salary range?",
         },
@@ -44,7 +44,7 @@ async def test_ask_document_not_found(client, demo_key_off, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_ask_rejects_document_not_ready(client, demo_key_off, monkeypatch):
+async def test_ask_rejects_document_not_ready(client, demo_key_off, monkeypatch, force_auth):
     """Ask returns 400 when document status is not ready."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -56,6 +56,7 @@ async def test_ask_rejects_document_not_ready(client, demo_key_off, monkeypatch)
         user = User(id=user_id, email="ask-test@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="ask-test@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -71,7 +72,6 @@ async def test_ask_rejects_document_not_ready(client, demo_key_off, monkeypatch)
     resp = await client.post(
         "/ask",
         json={
-            "user_id": str(user_id),
             "document_id": str(doc_id),
             "question": "What is the salary?",
         },
@@ -81,7 +81,7 @@ async def test_ask_rejects_document_not_ready(client, demo_key_off, monkeypatch)
 
 
 @pytest.mark.asyncio
-async def test_ask_no_chunks_returns_fallback(client, demo_key_off, monkeypatch):
+async def test_ask_no_chunks_returns_fallback(client, demo_key_off, monkeypatch, force_auth):
     """Ask returns fallback answer when no relevant chunks found."""
     from app.db.base import async_session_maker
     from app.models import Document, User
@@ -93,6 +93,7 @@ async def test_ask_no_chunks_returns_fallback(client, demo_key_off, monkeypatch)
         user = User(id=user_id, email="ask-nochunks@t.local")
         db.add(user)
         await db.commit()
+    await force_auth(user_id=user_id, email="ask-nochunks@t.local")
     async with async_session_maker() as db:
         doc = Document(
             user_id=user_id,
@@ -111,7 +112,6 @@ async def test_ask_no_chunks_returns_fallback(client, demo_key_off, monkeypatch)
             resp = await client.post(
                 "/ask",
                 json={
-                    "user_id": str(user_id),
                     "document_id": str(doc_id),
                     "question": "What is the salary?",
                 },

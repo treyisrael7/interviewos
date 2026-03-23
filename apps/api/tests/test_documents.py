@@ -8,7 +8,6 @@ from app.services.storage import LocalStorage
 
 
 PRESIGN_BODY = {
-    "user_id": "11111111-1111-1111-1111-111111111111",
     "filename": "test.pdf",
     "content_type": "application/pdf",
     "file_size_bytes": 1024,
@@ -30,8 +29,9 @@ def use_local_storage(monkeypatch, tmp_path):
 
 
 @pytest.mark.asyncio
-async def test_presign_success(client, demo_key_off, use_local_storage):
+async def test_presign_success(client, demo_key_off, use_local_storage, force_auth):
     """Presign returns document_id, s3_key, upload_url, method."""
+    await force_auth()
     resp = await client.post("/documents/presign", json=PRESIGN_BODY)
     assert resp.status_code == 200
     data = resp.json()
@@ -44,8 +44,9 @@ async def test_presign_success(client, demo_key_off, use_local_storage):
 
 
 @pytest.mark.asyncio
-async def test_presign_rejects_pdf_too_large(client, demo_key_off, use_local_storage, monkeypatch):
+async def test_presign_rejects_pdf_too_large(client, demo_key_off, use_local_storage, monkeypatch, force_auth):
     """Presign returns 400 when file exceeds max_pdf_mb."""
+    await force_auth()
     monkeypatch.setattr(settings, "max_pdf_mb", 1)
     body = {**PRESIGN_BODY, "file_size_bytes": 2 * 1024 * 1024}  # 2 MB
     resp = await client.post("/documents/presign", json=body)
@@ -54,16 +55,18 @@ async def test_presign_rejects_pdf_too_large(client, demo_key_off, use_local_sto
 
 
 @pytest.mark.asyncio
-async def test_presign_rejects_invalid_content_type(client, demo_key_off, use_local_storage):
+async def test_presign_rejects_invalid_content_type(client, demo_key_off, use_local_storage, force_auth):
     """Presign returns 422 for non-PDF content type."""
+    await force_auth()
     body = {**PRESIGN_BODY, "content_type": "image/jpeg"}
     resp = await client.post("/documents/presign", json=body)
     assert resp.status_code == 422
 
 
 @pytest.mark.asyncio
-async def test_presign_rejects_invalid_input(client, demo_key_off, use_local_storage):
+async def test_presign_rejects_invalid_input(client, demo_key_off, use_local_storage, force_auth):
     """Presign returns 422 for missing or invalid fields."""
+    await force_auth()
     resp = await client.post("/documents/presign", json={})
     assert resp.status_code == 422
 
@@ -72,8 +75,9 @@ async def test_presign_rejects_invalid_input(client, demo_key_off, use_local_sto
 
 
 @pytest.mark.asyncio
-async def test_full_upload_flow(client, demo_key_off, use_local_storage):
+async def test_full_upload_flow(client, demo_key_off, use_local_storage, force_auth):
     """Presign -> upload to upload-local -> confirm yields status=uploaded."""
+    await force_auth()
     # Step 1: Presign
     presign_resp = await client.post("/documents/presign", json=PRESIGN_BODY)
     assert presign_resp.status_code == 200
@@ -92,7 +96,6 @@ async def test_full_upload_flow(client, demo_key_off, use_local_storage):
 
     # Step 3: Confirm
     confirm_body = {
-        "user_id": PRESIGN_BODY["user_id"],
         "document_id": document_id,
         "s3_key": s3_key,
     }
@@ -103,11 +106,11 @@ async def test_full_upload_flow(client, demo_key_off, use_local_storage):
 
 
 @pytest.mark.asyncio
-async def test_confirm_document_not_found(client, demo_key_off, use_local_storage):
+async def test_confirm_document_not_found(client, demo_key_off, use_local_storage, force_auth):
     """Confirm returns 404 when document_id does not exist."""
+    await force_auth()
     fake_id = str(uuid.uuid4())
     confirm_body = {
-        "user_id": PRESIGN_BODY["user_id"],
         "document_id": fake_id,
         "s3_key": "documents/fake/fake/test.pdf",
     }
@@ -116,14 +119,14 @@ async def test_confirm_document_not_found(client, demo_key_off, use_local_storag
 
 
 @pytest.mark.asyncio
-async def test_confirm_file_not_in_storage(client, demo_key_off, use_local_storage):
+async def test_confirm_file_not_in_storage(client, demo_key_off, use_local_storage, force_auth):
     """Confirm returns 400 when doc exists in DB but file not uploaded yet."""
+    await force_auth()
     presign_resp = await client.post("/documents/presign", json=PRESIGN_BODY)
     assert presign_resp.status_code == 200
     presign_data = presign_resp.json()
     # Don't upload - go straight to confirm
     confirm_body = {
-        "user_id": PRESIGN_BODY["user_id"],
         "document_id": presign_data["document_id"],
         "s3_key": presign_data["s3_key"],
     }
@@ -135,8 +138,9 @@ async def test_confirm_file_not_in_storage(client, demo_key_off, use_local_stora
 
 
 @pytest.mark.asyncio
-async def test_upload_local_creates_file(client, demo_key_off, use_local_storage):
+async def test_upload_local_creates_file(client, demo_key_off, use_local_storage, force_auth):
     """PUT upload-local creates the file at the expected path."""
+    await force_auth()
     presign_resp = await client.post("/documents/presign", json=PRESIGN_BODY)
     assert presign_resp.status_code == 200
     s3_key = presign_resp.json()["s3_key"]

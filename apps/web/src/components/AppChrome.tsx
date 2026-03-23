@@ -12,7 +12,6 @@ export function AppChrome() {
         <div className="flex items-center gap-2">
             {isSignedIn ? (
               <UserButton
-                afterSignOutUrl="/"
                 appearance={{
                   elements: {
                     avatarBox: "h-8 w-8",
