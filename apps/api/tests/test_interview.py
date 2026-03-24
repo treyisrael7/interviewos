@@ -674,6 +674,111 @@ async def test_interview_session_analytics(client, demo_key_off, force_auth):
     assert "Communication" in labels or "System design" in labels
 
 
+@pytest.mark.asyncio
+async def test_interview_analytics_overview(client, demo_key_off, force_auth):
+    """GET /interview/analytics/overview aggregates across sessions for the user."""
+    from app.db.base import async_session_maker
+    from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
+
+    user_id = uuid.uuid4()
+    async with async_session_maker() as db:
+        user = User(id=user_id, email="overview@t.local")
+        db.add(user)
+        await db.commit()
+    await force_auth(user_id=user_id, email="overview@t.local")
+    async with async_session_maker() as db:
+        doc = Document(
+            user_id=user_id,
+            filename="jd.pdf",
+            s3_key="x",
+            status="ready",
+            doc_domain="job_description",
+        )
+        db.add(doc)
+        await db.flush()
+
+        # Older session: lower scores
+        s_old = InterviewSession(
+            user_id=user_id,
+            document_id=doc.id,
+            mode="role_driven",
+            difficulty="mid",
+        )
+        db.add(s_old)
+        await db.flush()
+        q_old = InterviewQuestion(
+            session_id=s_old.id,
+            type="behavioral",
+            question="Old Q",
+            rubric_json={
+                "bullets": [],
+                "evidence": [],
+                "key_topics": [],
+                "competency_label": "Leadership",
+            },
+        )
+        db.add(q_old)
+        await db.flush()
+        db.add(
+            InterviewAnswer(
+                question_id=q_old.id,
+                answer_text="a",
+                score=50.0,
+                feedback_summary="s",
+                strengths=[],
+                weaknesses=[],
+                feedback_json={"score_breakdown": {}},
+            )
+        )
+
+        # Newer session: higher scores
+        s_new = InterviewSession(
+            user_id=user_id,
+            document_id=doc.id,
+            mode="role_driven",
+            difficulty="mid",
+        )
+        db.add(s_new)
+        await db.flush()
+        q_new = InterviewQuestion(
+            session_id=s_new.id,
+            type="scenario",
+            question="New Q",
+            rubric_json={
+                "bullets": [],
+                "evidence": [],
+                "key_topics": [],
+                "competency_label": "System design",
+            },
+        )
+        db.add(q_new)
+        await db.flush()
+        db.add(
+            InterviewAnswer(
+                question_id=q_new.id,
+                answer_text="b",
+                score=80.0,
+                feedback_summary="s",
+                strengths=[],
+                weaknesses=[],
+                feedback_json={"score_breakdown": {}},
+            )
+        )
+        await db.commit()
+
+    resp = await client.get("/interview/analytics/overview")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["total_session_count"] == 2
+    assert data["total_answer_count"] == 2
+    assert data["overall_average_score"] == 65.0
+    assert len(data["score_trend"]) == 2
+    assert data["last_session_vs_prior_percent_change"] is not None
+    assert data["last_session_vs_prior_percent_change"] > 0
+    assert data["focus_area_hint"] == "Leadership"
+    assert len(data["recent_sessions"]) >= 2
+
+
 def test_interview_scoring_is_deterministic():
     from app.services.interview_scoring import compute_score_breakdown
 

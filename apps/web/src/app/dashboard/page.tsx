@@ -201,6 +201,12 @@ export default function DashboardPage() {
                 Fast practice
               </span>
             </div>
+            <Link
+              href="/dashboard/analytics"
+              className="inline-flex text-sm font-semibold text-zenodrift-accent transition-colors hover:text-zenodrift-accent-hover"
+            >
+              View practice analytics →
+            </Link>
           </div>
 
           {/* Right: glass cards for interactive elements only */}

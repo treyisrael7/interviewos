@@ -12,6 +12,7 @@ export function useEvaluateAnswerMutation(documentId: string) {
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: queryKeys.document(documentId) });
       qc.invalidateQueries({ queryKey: queryKeys.documents() });
+      qc.invalidateQueries({ queryKey: queryKeys.interviewAnalyticsOverview() });
     },
   });
 }

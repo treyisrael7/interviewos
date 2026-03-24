@@ -475,3 +475,46 @@ export async function getInterviewSession(
   });
   return handleResponse<InterviewSessionDetail>(res);
 }
+
+export interface InterviewAnalyticsCompetencyStat {
+  competency_id: string | null;
+  competency_label: string;
+  average_score: number;
+  answer_count: number;
+}
+
+export interface InterviewAnalyticsTrendPoint {
+  at: string;
+  score: number;
+  session_id: string;
+  question_id: string;
+}
+
+export interface InterviewAnalyticsRecentSession {
+  id: string;
+  document_id: string;
+  created_at: string;
+  difficulty: string;
+  question_count: number;
+  answer_count: number;
+  average_score: number | null;
+}
+
+export interface InterviewAnalyticsOverview {
+  total_session_count: number;
+  total_answer_count: number;
+  overall_average_score: number | null;
+  score_trend: InterviewAnalyticsTrendPoint[];
+  strongest_competencies: InterviewAnalyticsCompetencyStat[];
+  weakest_competencies: InterviewAnalyticsCompetencyStat[];
+  recent_sessions: InterviewAnalyticsRecentSession[];
+  last_session_vs_prior_percent_change: number | null;
+  focus_area_hint: string | null;
+}
+
+export async function getInterviewAnalyticsOverview(): Promise<InterviewAnalyticsOverview> {
+  const res = await fetch(`${API_BASE}/interview/analytics/overview`, {
+    headers: await getAuthHeaders(),
+  });
+  return handleResponse<InterviewAnalyticsOverview>(res);
+}

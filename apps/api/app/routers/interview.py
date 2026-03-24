@@ -540,11 +540,192 @@ class InterviewSessionAnalytics(BaseModel):
     improvement: ImprovementSummary
 
 
+class GlobalScoreTrendPoint(BaseModel):
+    at: str
+    score: float
+    session_id: uuid.UUID
+    question_id: uuid.UUID
+
+
+class RecentSessionAnalyticsRow(BaseModel):
+    id: uuid.UUID
+    document_id: uuid.UUID
+    created_at: str
+    difficulty: str
+    question_count: int
+    answer_count: int
+    average_score: float | None
+
+
+class InterviewAnalyticsOverview(BaseModel):
+    """Cross-session aggregates for the dashboard."""
+
+    total_session_count: int
+    total_answer_count: int
+    overall_average_score: float | None
+    score_trend: list[GlobalScoreTrendPoint]
+    strongest_competencies: list[CompetencyStats]
+    weakest_competencies: list[CompetencyStats]
+    recent_sessions: list[RecentSessionAnalyticsRow]
+    last_session_vs_prior_percent_change: float | None
+    focus_area_hint: str | None
+
+
 def _competency_key_for_question(q: InterviewQuestion) -> tuple[str | None, str]:
     _, _, _, focus_area, _, comp_id, comp_label, _ = _from_rubric(q.rubric_json)
     label = (comp_label or focus_area or "").strip() or "General"
     cid = str(comp_id) if comp_id is not None else None
     return cid, label
+
+
+@router.get("/analytics/overview", response_model=InterviewAnalyticsOverview)
+async def get_interview_analytics_overview(
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    User-wide interview stats: score trend, competency strengths/weaknesses, recent sessions.
+    """
+    from collections import defaultdict
+
+    from sqlalchemy import func
+
+    session_count_row = await db.execute(
+        select(func.count())
+        .select_from(InterviewSession)
+        .where(InterviewSession.user_id == current_user.id)
+    )
+    total_session_count = int(session_count_row.scalar_one() or 0)
+
+    ar = await db.execute(
+        select(InterviewAnswer, InterviewQuestion, InterviewSession)
+        .join(InterviewQuestion, InterviewAnswer.question_id == InterviewQuestion.id)
+        .join(InterviewSession, InterviewQuestion.session_id == InterviewSession.id)
+        .where(InterviewSession.user_id == current_user.id)
+        .order_by(InterviewAnswer.created_at.asc())
+    )
+    rows = ar.all()
+
+    trend: list[GlobalScoreTrendPoint] = []
+    scores: list[float] = []
+    by_label: dict[str, dict] = defaultdict(lambda: {"scores": [], "competency_id": None})
+    session_scores: dict[uuid.UUID, list[float]] = defaultdict(list)
+    session_meta: dict[uuid.UUID, object] = {}
+
+    for ans, q, sess in rows:
+        s = float(ans.score)
+        scores.append(s)
+        session_scores[sess.id].append(s)
+        session_meta[sess.id] = sess.created_at
+        trend.append(
+            GlobalScoreTrendPoint(
+                at=ans.created_at.isoformat() if ans.created_at else "",
+                score=s,
+                session_id=sess.id,
+                question_id=q.id,
+            )
+        )
+        cid, label = _competency_key_for_question(q)
+        by_label[label]["scores"].append(s)
+        if cid is not None:
+            by_label[label]["competency_id"] = cid
+
+    n = len(scores)
+    overall_avg = round(sum(scores) / n, 2) if n else None
+
+    comp_rows: list[CompetencyStats] = []
+    for label, data in by_label.items():
+        sc = data["scores"]
+        if not sc:
+            continue
+        comp_rows.append(
+            CompetencyStats(
+                competency_id=data.get("competency_id"),
+                competency_label=label,
+                average_score=round(sum(sc) / len(sc), 2),
+                answer_count=len(sc),
+            )
+        )
+    top_n = 5
+    strongest = sorted(comp_rows, key=lambda x: x.average_score, reverse=True)[:top_n]
+    weakest = sorted(comp_rows, key=lambda x: x.average_score)[:top_n]
+
+    sr = await db.execute(
+        select(
+            InterviewSession,
+            func.count(InterviewQuestion.id).label("question_count"),
+        )
+        .outerjoin(InterviewQuestion, InterviewQuestion.session_id == InterviewSession.id)
+        .where(InterviewSession.user_id == current_user.id)
+        .group_by(InterviewSession.id)
+        .order_by(InterviewSession.created_at.desc())
+        .limit(12)
+    )
+    sess_rows = sr.all()
+
+    recent: list[RecentSessionAnalyticsRow] = []
+    for row in sess_rows:
+        s = row[0]
+        qcount = int(row[1] or 0)
+        sc_list = session_scores.get(s.id, [])
+        ac = len(sc_list)
+        avg_s = round(sum(sc_list) / len(sc_list), 2) if sc_list else None
+        recent.append(
+            RecentSessionAnalyticsRow(
+                id=s.id,
+                document_id=s.document_id,
+                created_at=s.created_at.isoformat() if s.created_at else "",
+                difficulty=s.difficulty,
+                question_count=qcount,
+                answer_count=ac,
+                average_score=avg_s,
+            )
+        )
+
+    def _session_sort_key(sid: uuid.UUID) -> float:
+        ct = session_meta.get(sid)
+        if ct is None:
+            return 0.0
+        try:
+            return ct.timestamp()  # type: ignore[union-attr]
+        except (AttributeError, OSError):
+            return 0.0
+
+    ordered_with_answers = sorted(
+        [sid for sid in session_scores if session_scores[sid]],
+        key=_session_sort_key,
+        reverse=True,
+    )
+    pct_change: float | None = None
+    if len(ordered_with_answers) >= 2:
+        last_avg = sum(session_scores[ordered_with_answers[0]]) / len(
+            session_scores[ordered_with_answers[0]]
+        )
+        prior_avg = sum(session_scores[ordered_with_answers[1]]) / len(
+            session_scores[ordered_with_answers[1]]
+        )
+        if prior_avg > 0:
+            pct_change = round((last_avg - prior_avg) / prior_avg * 100, 1)
+        elif last_avg > 0:
+            pct_change = 100.0
+        else:
+            pct_change = 0.0
+
+    focus_hint: str | None = None
+    if weakest and weakest[0].answer_count >= 1:
+        focus_hint = weakest[0].competency_label
+
+    return InterviewAnalyticsOverview(
+        total_session_count=total_session_count,
+        total_answer_count=n,
+        overall_average_score=overall_avg,
+        score_trend=trend,
+        strongest_competencies=strongest,
+        weakest_competencies=weakest,
+        recent_sessions=recent,
+        last_session_vs_prior_percent_change=pct_change,
+        focus_area_hint=focus_hint,
+    )
 
 
 @router.get("/{session_id}/analytics", response_model=InterviewSessionAnalytics)
