@@ -3,7 +3,7 @@
 import uuid
 from datetime import datetime
 
-from sqlalchemy import ForeignKey, Index, text
+from sqlalchemy import ForeignKey, Index, Text, text
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -84,6 +84,9 @@ class InterviewAnswer(Base):
     )
     answer_text: Mapped[str] = mapped_column(nullable=False)
     score: Mapped[float] = mapped_column(nullable=False)
+    feedback_summary: Mapped[str | None] = mapped_column(Text, nullable=True)
+    strengths: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
+    weaknesses: Mapped[list] = mapped_column(JSONB, nullable=False, server_default=text("'[]'::jsonb"))
     feedback_json: Mapped[dict] = mapped_column(JSONB(), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         server_default=text("now()"),

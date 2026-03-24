@@ -1,6 +1,5 @@
 """Interview Prep: sessions, questions, generate, evaluate."""
 
-import asyncio
 import logging
 import uuid
 
@@ -18,6 +17,7 @@ from app.services.interview import (
     evaluate_answer_with_retrieval,
     generate_questions,
 )
+from app.services.interview_scoring import build_feedback_summary, compute_score_breakdown
 from app.services.role_intelligence import VALID_DOMAINS, VALID_SENIORITIES
 
 router = APIRouter(prefix="/interview", tags=["interview"])
@@ -93,9 +93,19 @@ class CitedItem(BaseModel):
     citations: list[CitationItem] = []
 
 
+class ScoreBreakdownOut(BaseModel):
+    relevance_to_context: int
+    completeness: int
+    clarity: int
+    jd_alignment: int
+    overall: int
+
+
 class InterviewEvaluateOutput(BaseModel):
     answer_id: uuid.UUID
     score: float
+    score_breakdown: ScoreBreakdownOut
+    feedback_summary: str
     strengths: list[str]
     gaps: list[str]
     strengths_cited: list[CitedItem] = []
@@ -379,25 +389,45 @@ async def evaluate(
         logger.exception("evaluate_answer_with_retrieval failed")
         raise HTTPException(status_code=503, detail=f"Evaluation failed: {str(e)[:200]}")
 
+    ev_for_scoring = evaluation.pop("evidence_for_scoring", []) or []
+    score_breakdown = compute_score_breakdown(
+        user_answer=body.answer_text,
+        evidence=ev_for_scoring,
+        what_good_looks_like=bullets,
+        must_mention=must_mention,
+        role_profile=rp_dict,
+        competency_label=comp_label,
+    )
+    feedback_summary = build_feedback_summary(score_breakdown)
+    final_score = float(score_breakdown["overall"])
+
     follow_ups = evaluation.get("follow_up_questions") or []
     if evaluation.get("suggested_followup") and not follow_ups:
         follow_ups = [evaluation["suggested_followup"]]
 
+    strengths_list = list(evaluation.get("strengths") or [])
+    gaps_list = list(evaluation.get("gaps") or [])
+
     feedback_json = {
-        "strengths": evaluation["strengths"],
-        "gaps": evaluation["gaps"],
+        "strengths": strengths_list,
+        "gaps": gaps_list,
         "strengths_cited": evaluation.get("strengths_cited", []),
         "gaps_cited": evaluation.get("gaps_cited", []),
         "improved_answer": evaluation["improved_answer"],
         "follow_up_questions": follow_ups,
         "suggested_followup": evaluation.get("suggested_followup"),
         "evidence_used": evaluation["evidence_used"],
+        "score_breakdown": score_breakdown,
+        "llm_score_0_10": evaluation.get("score"),
     }
 
     answer = InterviewAnswer(
         question_id=body.question_id,
         answer_text=body.answer_text,
-        score=evaluation["score"],
+        score=final_score,
+        feedback_summary=feedback_summary,
+        strengths=strengths_list,
+        weaknesses=gaps_list,
         feedback_json=feedback_json,
     )
     db.add(answer)
@@ -422,9 +452,17 @@ async def evaluate(
 
     return InterviewEvaluateOutput(
         answer_id=answer.id,
-        score=evaluation["score"],
-        strengths=evaluation["strengths"],
-        gaps=evaluation["gaps"],
+        score=final_score,
+        score_breakdown=ScoreBreakdownOut(
+            relevance_to_context=score_breakdown["relevance_to_context"],
+            completeness=score_breakdown["completeness"],
+            clarity=score_breakdown["clarity"],
+            jd_alignment=score_breakdown["jd_alignment"],
+            overall=score_breakdown["overall"],
+        ),
+        feedback_summary=feedback_summary,
+        strengths=strengths_list,
+        gaps=gaps_list,
         strengths_cited=[_to_cited(s) for s in strengths_cited if isinstance(s, dict)],
         gaps_cited=[_to_cited(g) for g in gaps_cited if isinstance(g, dict)],
         improved_answer=evaluation["improved_answer"],
@@ -470,6 +508,136 @@ class QuestionDetail(BaseModel):
     evidence: list[EvidenceItem]
     rubric_bullets: list[str]
     created_at: str
+
+
+class ScoreTrendPoint(BaseModel):
+    at: str
+    score: float
+    question_id: uuid.UUID
+
+
+class CompetencyStats(BaseModel):
+    competency_id: str | None = None
+    competency_label: str
+    average_score: float
+    answer_count: int
+
+
+class ImprovementSummary(BaseModel):
+    answer_count: int
+    first_half_average: float | None = None
+    second_half_average: float | None = None
+    improvement_delta: float | None = None
+
+
+class InterviewSessionAnalytics(BaseModel):
+    session_id: uuid.UUID
+    answer_count: int
+    average_score: float | None
+    score_trend: list[ScoreTrendPoint]
+    strongest_competencies: list[CompetencyStats]
+    weakest_competencies: list[CompetencyStats]
+    improvement: ImprovementSummary
+
+
+def _competency_key_for_question(q: InterviewQuestion) -> tuple[str | None, str]:
+    _, _, _, focus_area, _, comp_id, comp_label, _ = _from_rubric(q.rubric_json)
+    label = (comp_label or focus_area or "").strip() or "General"
+    cid = str(comp_id) if comp_id is not None else None
+    return cid, label
+
+
+@router.get("/{session_id}/analytics", response_model=InterviewSessionAnalytics)
+async def get_session_analytics(
+    session_id: uuid.UUID,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """
+    Aggregated scores and competency trends for a session (chronological answers).
+    """
+    from collections import defaultdict
+
+    result = await db.execute(select(InterviewSession).where(InterviewSession.id == session_id))
+    session = result.scalar_one_or_none()
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+    assert_resource_ownership(session, current_user)
+
+    ar = await db.execute(
+        select(InterviewAnswer, InterviewQuestion)
+        .join(InterviewQuestion, InterviewAnswer.question_id == InterviewQuestion.id)
+        .where(InterviewQuestion.session_id == session_id)
+        .order_by(InterviewAnswer.created_at.asc())
+    )
+    rows = ar.all()
+
+    trend: list[ScoreTrendPoint] = []
+    scores: list[float] = []
+    by_label: dict[str, dict] = defaultdict(lambda: {"scores": [], "competency_id": None})
+
+    for ans, q in rows:
+        scores.append(float(ans.score))
+        trend.append(
+            ScoreTrendPoint(
+                at=ans.created_at.isoformat() if ans.created_at else "",
+                score=float(ans.score),
+                question_id=q.id,
+            )
+        )
+        cid, label = _competency_key_for_question(q)
+        by_label[label]["scores"].append(float(ans.score))
+        if cid is not None:
+            by_label[label]["competency_id"] = cid
+
+    n = len(scores)
+    avg = sum(scores) / n if n else None
+
+    comp_rows: list[CompetencyStats] = []
+    for label, data in by_label.items():
+        sc = data["scores"]
+        if not sc:
+            continue
+        comp_rows.append(
+            CompetencyStats(
+                competency_id=data.get("competency_id"),
+                competency_label=label,
+                average_score=round(sum(sc) / len(sc), 2),
+                answer_count=len(sc),
+            )
+        )
+    top_n = 5
+    strongest = sorted(comp_rows, key=lambda x: x.average_score, reverse=True)[:top_n]
+    weakest = sorted(comp_rows, key=lambda x: x.average_score)[:top_n]
+
+    first_half_avg: float | None = None
+    second_half_avg: float | None = None
+    improvement_delta: float | None = None
+    if n >= 2:
+        mid = n // 2
+        first_part = scores[:mid]
+        second_part = scores[mid:]
+        if first_part:
+            first_half_avg = round(sum(first_part) / len(first_part), 2)
+        if second_part:
+            second_half_avg = round(sum(second_part) / len(second_part), 2)
+        if first_half_avg is not None and second_half_avg is not None:
+            improvement_delta = round(second_half_avg - first_half_avg, 2)
+
+    return InterviewSessionAnalytics(
+        session_id=session_id,
+        answer_count=n,
+        average_score=round(avg, 2) if avg is not None else None,
+        score_trend=trend,
+        strongest_competencies=strongest,
+        weakest_competencies=weakest,
+        improvement=ImprovementSummary(
+            answer_count=n,
+            first_half_average=first_half_avg,
+            second_half_average=second_half_avg,
+            improvement_delta=improvement_delta,
+        ),
+    )
 
 
 @router.get("/sessions", response_model=list[SessionSummary])

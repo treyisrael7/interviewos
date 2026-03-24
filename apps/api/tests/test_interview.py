@@ -349,6 +349,9 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch, for
             "evidence_used": [
                 {"quote": "Python, AWS", "sourceId": "aa", "page": 1, "chunkId": "aa"}
             ],
+            "evidence_for_scoring": [
+                {"snippet": "Python, AWS, scalability, collaboration, concrete examples"},
+            ],
         }
 
     monkeypatch.setattr("app.routers.interview.evaluate_answer_with_retrieval", _mock_evaluate)
@@ -407,7 +410,11 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch, for
     assert resp.status_code == 200
     data = resp.json()
     assert "answer_id" in data
-    assert data["score"] == 7.0
+    assert 0 <= data["score"] <= 100
+    assert "score_breakdown" in data
+    for k in ("relevance_to_context", "completeness", "clarity", "jd_alignment", "overall"):
+        assert k in data["score_breakdown"]
+    assert "feedback_summary" in data and data["feedback_summary"]
     assert "strengths" in data
     assert "gaps" in data
     assert "improved_answer" in data
@@ -578,3 +585,104 @@ async def test_get_question(client, demo_key_off, force_auth):
     assert data["question"] == "What is Python?"
     assert data["session_id"] == str(session_id)
     assert "Python" in data["key_topics"]
+
+
+@pytest.mark.asyncio
+async def test_interview_session_analytics(client, demo_key_off, force_auth):
+    """GET /interview/{session_id}/analytics aggregates scores and competency stats."""
+    from app.db.base import async_session_maker
+    from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
+
+    user_id = uuid.uuid4()
+    async with async_session_maker() as db:
+        user = User(id=user_id, email="analytics@t.local")
+        db.add(user)
+        await db.commit()
+    await force_auth(user_id=user_id, email="analytics@t.local")
+    async with async_session_maker() as db:
+        doc = Document(
+            user_id=user_id,
+            filename="jd.pdf",
+            s3_key="x",
+            status="ready",
+            doc_domain="job_description",
+        )
+        db.add(doc)
+        await db.flush()
+        session = InterviewSession(
+            user_id=user_id,
+            document_id=doc.id,
+            mode="role_driven",
+            difficulty="mid",
+        )
+        db.add(session)
+        await db.flush()
+        q_a = InterviewQuestion(
+            session_id=session.id,
+            type="behavioral",
+            question="Q1",
+            rubric_json={
+                "bullets": [],
+                "evidence": [],
+                "key_topics": [],
+                "competency_id": "c1",
+                "competency_label": "Communication",
+            },
+        )
+        q_b = InterviewQuestion(
+            session_id=session.id,
+            type="scenario",
+            question="Q2",
+            rubric_json={
+                "bullets": [],
+                "evidence": [],
+                "key_topics": [],
+                "competency_id": "c2",
+                "competency_label": "System design",
+            },
+        )
+        db.add(q_a)
+        db.add(q_b)
+        await db.flush()
+        for q, sc in [(q_a, 40.0), (q_b, 50.0), (q_a, 70.0), (q_b, 80.0)]:
+            db.add(
+                InterviewAnswer(
+                    question_id=q.id,
+                    answer_text="answer",
+                    score=sc,
+                    feedback_summary="s",
+                    strengths=[],
+                    weaknesses=[],
+                    feedback_json={"score_breakdown": {}},
+                )
+            )
+        await db.commit()
+        session_id = session.id
+
+    resp = await client.get(f"/interview/{session_id}/analytics")
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["session_id"] == str(session_id)
+    assert data["answer_count"] == 4
+    assert data["average_score"] == 60.0
+    assert len(data["score_trend"]) == 4
+    assert data["score_trend"][0]["score"] == 40.0
+    assert data["score_trend"][-1]["score"] == 80.0
+    assert data["improvement"]["improvement_delta"] is not None
+    assert data["improvement"]["improvement_delta"] > 0
+    labels = {c["competency_label"] for c in data["strongest_competencies"]}
+    assert "Communication" in labels or "System design" in labels
+
+
+def test_interview_scoring_is_deterministic():
+    from app.services.interview_scoring import compute_score_breakdown
+
+    ev = [{"snippet": "Python microservices AWS monitoring"}]
+    bullets = ["Use concrete metrics", "Mention reliability"]
+    must = ["Python"]
+    rp = {"focusAreas": ["backend", "cloud"]}
+    a = "We used Python on AWS with Prometheus monitoring and on-call rotations."
+    b1 = compute_score_breakdown(a, ev, bullets, must, rp, "Backend")
+    b2 = compute_score_breakdown(a, ev, bullets, must, rp, "Backend")
+    assert b1 == b2
+    assert b1["overall"] == b2["overall"]

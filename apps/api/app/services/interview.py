@@ -747,7 +747,9 @@ def evaluate_answer(
     )
 
     raw = (response.choices[0].message.content or "").strip()
-    return _parse_evaluation_response(raw, evidence or [])
+    parsed = _parse_evaluation_response(raw, evidence or [])
+    parsed["evidence_for_scoring"] = list(evidence or [])
+    return parsed
 
 
 AUXILIARY_SOURCE_TYPES = ["resume", "company", "notes"]
