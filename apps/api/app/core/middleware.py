@@ -5,10 +5,15 @@ import json
 from fastapi import Request, Response
 from starlette.middleware.base import BaseHTTPMiddleware
 
+from app.core.auth import extract_bearer_token
 from app.core.config import settings
 from app.core.rate_limit import RATE_LIMITS, _path_to_route, check_rate_limit
 
 PUBLIC_PATHS = {"/", "/health", "/openapi.json", "/docs", "/redoc"}
+
+_AUTH_CONFLICT_BODY = (
+    '{"detail":"Do not send x-demo-key together with a Bearer token; use one authentication method."}'
+)
 
 
 def _path_matches_route(path: str) -> str | None:
@@ -17,10 +22,14 @@ def _path_matches_route(path: str) -> str | None:
 
 
 class DemoGateMiddleware(BaseHTTPMiddleware):
-    """Optional demo gate; never provides user identity."""
+    """
+    When demo mode is enabled: require x-demo-key on non-public routes unless the client
+    uses a non-empty Bearer token (real auth). Never supplies user identity.
+    When demo mode is off: demo headers are ignored; no demo gate.
+    """
 
     async def dispatch(self, request: Request, call_next) -> Response:
-        if not settings.demo_key:
+        if not settings.demo_auth_active:
             return await call_next(request)
 
         # Allow OPTIONS (CORS preflight) - browser doesn't send custom headers on preflight
@@ -31,8 +40,18 @@ class DemoGateMiddleware(BaseHTTPMiddleware):
         if path in PUBLIC_PATHS:
             return await call_next(request)
 
-        # When Clerk is configured, allow Bearer token (routers will validate JWT)
-        if settings.clerk_jwks_url and request.headers.get("authorization", "").lower().startswith("bearer "):
+        bearer = extract_bearer_token(request)
+        demo_header_present = request.headers.get("x-demo-key") is not None
+
+        if bearer and demo_header_present:
+            return Response(
+                content=_AUTH_CONFLICT_BODY,
+                status_code=400,
+                media_type="application/json",
+            )
+
+        # Real auth path: non-empty Bearer — JWT validated in dependencies, not here
+        if bearer:
             return await call_next(request)
 
         key = request.headers.get("x-demo-key")

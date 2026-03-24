@@ -14,6 +14,7 @@ async def test_ask_rate_limit(client, monkeypatch, force_auth):
     from app.db.base import async_session_maker
     from app.models import Document, User
 
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
@@ -49,6 +50,7 @@ async def test_ask_rate_limit(client, monkeypatch, force_auth):
 @pytest.mark.asyncio
 async def test_ingest_rate_limit(client, monkeypatch, force_auth):
     """POST /documents/{id}/ingest is rate limited to 3 per day."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
     monkeypatch.setattr(settings, "s3_bucket", None)
@@ -95,6 +97,7 @@ async def test_ingest_rate_limit(client, monkeypatch, force_auth):
 @pytest.mark.asyncio
 async def test_presign_rate_limit(client, monkeypatch, force_auth):
     """POST /documents/presign is rate limited to 10 per day."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "s3_bucket", None)  # Use LocalStorage
     await force_auth()
@@ -116,6 +119,7 @@ async def test_presign_rate_limit(client, monkeypatch, force_auth):
 @pytest.mark.asyncio
 async def test_non_rate_limited_paths(client, monkeypatch):
     """GET / and /health are not rate limited."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     for _ in range(15):
         resp = await client.get("/")
@@ -130,6 +134,7 @@ async def test_client_supplied_user_header_does_not_bypass_limit(client, monkeyp
     from app.db.base import async_session_maker
     from app.models import Document, User
 
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 

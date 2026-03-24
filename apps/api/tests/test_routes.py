@@ -16,6 +16,7 @@ async def test_root(client):
 @pytest.mark.asyncio
 async def test_ask_requires_body(client, monkeypatch, force_auth):
     """Ask returns 422 for missing body (validation error)."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)  # ensure no gate
     await force_auth()
     resp = await client.post("/ask", json={})
@@ -25,6 +26,7 @@ async def test_ask_requires_body(client, monkeypatch, force_auth):
 @pytest.mark.asyncio
 async def test_ingest_requires_document_and_user(client, monkeypatch, force_auth):
     """Ingest returns 401 when no auth, 404 for unknown document."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "clerk_jwks_url", None)  # No Bearer
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")  # Avoid 503
@@ -46,6 +48,7 @@ async def test_ingest_requires_document_and_user(client, monkeypatch, force_auth
 @pytest.mark.asyncio
 async def test_presign_with_invalid_body_returns_422(client, monkeypatch, force_auth):
     """Presign returns 422 for invalid/missing body (validation error)."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
     await force_auth()
     resp = await client.post("/documents/presign", json={})

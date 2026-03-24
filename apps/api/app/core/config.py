@@ -1,7 +1,13 @@
+import uuid
 from pathlib import Path
+from typing import Self
 
 from dotenv import load_dotenv
+from pydantic import model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# Fixed sandbox identity when demo mode is enabled (isolated from real Clerk users).
+_DEFAULT_DEMO_USER_ID = uuid.UUID("11111111-1111-1111-1111-111111111111")
 
 # Project root (apps/api/app/core/config.py -> 5 levels up: core->app->api->apps->root)
 _ROOT = Path(__file__).resolve().parent.parent.parent.parent.parent
@@ -25,10 +31,12 @@ class Settings(BaseSettings):
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_os"
     database_url_sync: str = "postgresql://postgres:postgres@localhost:5432/interview_os"
 
-    # Demo gate
-    demo_key: str | None = None  # DEMO_KEY env; if set, require x-demo-key header on non-public routes
+    # Demo sandbox (OFF in production). When False, x-demo-key and demo user identity are disabled entirely.
+    demo_mode_enabled: bool = False  # DEMO_MODE_ENABLED
+    demo_key: str | None = None  # DEMO_KEY; required when demo_mode_enabled (validated below)
+    demo_user_id: uuid.UUID = _DEFAULT_DEMO_USER_ID  # DEMO_USER_ID — DB user for sandbox data only
 
-    # Clerk auth (when set, Bearer token required; else fallback to demo_key + user_id)
+    # Clerk JWT (Bearer). Real users always authenticate here; demo never overrides a valid Bearer path.
     clerk_jwks_url: str | None = None  # CLERK_JWKS_URL e.g. https://<xxx>.clerk.accounts.dev/.well-known/jwks.json
     clerk_issuer: str | None = None  # CLERK_ISSUER override; if unset, derived from JWKS URL
 
@@ -62,6 +70,17 @@ class Settings(BaseSettings):
 
     # OpenAI chat (Q&A)
     openai_chat_model: str = "gpt-4o-mini"  # OPENAI_CHAT_MODEL
+
+    @property
+    def demo_auth_active(self) -> bool:
+        """True when demo header auth is allowed (demo mode on and DEMO_KEY set)."""
+        return bool(self.demo_mode_enabled and self.demo_key)
+
+    @model_validator(mode="after")
+    def _validate_demo_config(self) -> Self:
+        if self.demo_mode_enabled and not (self.demo_key and str(self.demo_key).strip()):
+            raise ValueError("DEMO_MODE_ENABLED requires a non-empty DEMO_KEY")
+        return self
 
 
 settings = Settings()

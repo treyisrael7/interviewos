@@ -26,6 +26,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/interview_os
       DATABASE_URL_SYNC: postgresql://postgres:postgres@postgres:5432/interview_os
+      DEMO_MODE_ENABLED: ${DEMO_MODE_ENABLED:-false}
       DEMO_KEY: ${DEMO_KEY:-}
       CLERK_JWKS_URL: ${CLERK_JWKS_URL:-}
       CORS_ORIGINS: ${CORS_ORIGINS:-}

@@ -63,9 +63,10 @@ def reset_rate_limit():
 
 @pytest.fixture
 def demo_key_off(monkeypatch):
-    """Disable demo-key auth requirement for tests that don't send the header."""
+    """Disable demo mode so tests use force_auth / Bearer-only paths without x-demo-key."""
     from app.core.config import settings
 
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
     monkeypatch.setattr(settings, "demo_key", None)
 
 

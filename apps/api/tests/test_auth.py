@@ -88,6 +88,8 @@ async def test_get_or_create_user_creates_new():
 @pytest.mark.asyncio
 async def test_get_current_user_rejects_invalid_token(monkeypatch):
     """get_current_user returns 401 when verify_clerk_token fails."""
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    monkeypatch.setattr(settings, "demo_key", None)
     monkeypatch.setattr(settings, "clerk_jwks_url", "https://test.clerk.accounts.dev/.well-known/jwks.json")
 
     with patch("app.core.auth.verify_clerk_token", return_value=None):
@@ -109,10 +111,13 @@ async def test_get_current_user_rejects_invalid_token(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_get_current_user_requires_bearer_token():
-    """get_current_user returns 401 when the Authorization header is missing."""
+async def test_get_current_user_requires_bearer_token(monkeypatch):
+    """get_current_user returns 401 when no Bearer and demo mode is off."""
     from fastapi import FastAPI, Depends
     from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setattr(settings, "demo_mode_enabled", False)
+    monkeypatch.setattr(settings, "demo_key", None)
 
     app = FastAPI()
 
@@ -126,3 +131,29 @@ async def test_get_current_user_requires_bearer_token():
     ) as client:
         resp = await client.get("/test")
         assert resp.status_code == 401
+
+
+@pytest.mark.asyncio
+async def test_get_current_user_rejects_bearer_plus_demo_key(monkeypatch):
+    """get_current_user returns 400 when Bearer and x-demo-key are both sent."""
+    from fastapi import FastAPI, Depends
+    from httpx import ASGITransport, AsyncClient
+
+    monkeypatch.setattr(settings, "demo_mode_enabled", True)
+    monkeypatch.setattr(settings, "demo_key", "demo-secret")
+
+    app = FastAPI()
+
+    @app.get("/test")
+    async def route(user=Depends(get_current_user)):
+        return {"user_id": str(user.id)}
+
+    async with AsyncClient(
+        transport=ASGITransport(app=app),
+        base_url="http://test",
+    ) as client:
+        resp = await client.get(
+            "/test",
+            headers={"Authorization": "Bearer any", "x-demo-key": "demo-secret"},
+        )
+        assert resp.status_code == 400
