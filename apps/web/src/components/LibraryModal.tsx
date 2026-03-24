@@ -1,15 +1,10 @@
 "use client";
 
-import {
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-  useMemo,
-} from "react";
+import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
-import { listDocuments, type DocumentSummary } from "@/lib/api";
+import type { DocumentSummary } from "@/lib/api";
+import { useDocuments } from "@/hooks/use-documents";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -58,10 +53,13 @@ export function LibraryModal({ isOpen, onClose }: LibraryModalProps) {
   const overlayRef = useRef<HTMLDivElement>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const [docs, setDocs] = useState<DocumentSummary[]>([]);
-  const [loading, setLoading] = useState(false);
   const [search, setSearch] = useState("");
   const [pendingSwitchDoc, setPendingSwitchDoc] = useState<DocumentSummary | null>(null);
+
+  const { data: docs = [], isPending: loading } = useDocuments({
+    enabled: isOpen,
+    refetchOnMount: "always",
+  });
 
   const isInterviewMode = pathname?.startsWith("/interview/") ?? false;
 
@@ -71,21 +69,8 @@ export function LibraryModal({ isOpen, onClose }: LibraryModalProps) {
     return docs.filter((d) => d.filename.toLowerCase().includes(q));
   }, [docs, search]);
 
-  const loadDocs = useCallback(async () => {
-    setLoading(true);
-    try {
-      const list = await listDocuments();
-      setDocs(list);
-    } catch {
-      setDocs([]);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
-
   useEffect(() => {
     if (isOpen) {
-      loadDocs();
       setSearch("");
       setPendingSwitchDoc(null);
       document.body.style.overflow = "hidden";
@@ -94,7 +79,7 @@ export function LibraryModal({ isOpen, onClose }: LibraryModalProps) {
     return () => {
       document.body.style.overflow = "";
     };
-  }, [isOpen, loadDocs]);
+  }, [isOpen]);
 
   const handleEscape = useCallback(
     (e: KeyboardEvent) => {
@@ -289,7 +274,7 @@ export function LibraryModal({ isOpen, onClose }: LibraryModalProps) {
                             <button
                               onClick={(e) => {
                                 e.stopPropagation();
-                                isReady && handleUseForInterview(doc);
+                                if (isReady) handleUseForInterview(doc);
                               }}
                               disabled={isProcessing}
                               className="rounded-xl bg-orange-500 px-4 py-2.5 text-sm font-medium text-white shadow-sm transition-colors hover:bg-orange-600 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-60"

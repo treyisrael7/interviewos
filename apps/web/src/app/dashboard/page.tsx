@@ -1,25 +1,20 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useEffect, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { useUser } from "@clerk/nextjs";
 import { useLibrary } from "@/contexts/LibraryContext";
 import { GradientShell } from "@/components/GradientShell";
+import { ApiError, type DocumentSummary } from "@/lib/api";
+import { formatDocumentsListError } from "@/lib/query-error";
 import {
-  listDocuments,
-  presign,
-  uploadToPresignedUrl,
-  confirmUpload,
-  ingestDocument,
-  deleteDocument,
-  deleteAllDocuments,
-  ApiError,
-  type DocumentSummary,
-} from "@/lib/api";
+  useDocuments,
+  useUploadJobDescriptionMutation,
+  useIngestDocumentMutation,
+  useDeleteDocumentMutation,
+  useDeleteAllDocumentsMutation,
+} from "@/hooks/use-documents";
 import { AccountResumeSection } from "@/components/dashboard/AccountResumeSection";
-
-const POLL_INTERVAL_MS = 2000;
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -73,55 +68,25 @@ function formatUploadedAt(createdAt: string | undefined): string {
 
 export default function DashboardPage() {
   const router = useRouter();
-  const [docs, setDocs] = useState<DocumentSummary[]>([]);
-  const [loading, setLoading] = useState(true);
+  const {
+    data: docs = [],
+    isPending: documentsLoading,
+    isError: documentsQueryError,
+    error: documentsError,
+  } = useDocuments();
   const [error, setError] = useState<string | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState<string>("");
   const [processingId, setProcessingId] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
-  const [clearingAll, setClearingAll] = useState(false);
 
-  const fetchDocs = useCallback(async () => {
-    try {
-      setError(null);
-      const list = await listDocuments();
-      setDocs(list);
-    } catch (e) {
-      let msg =
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : `Failed to load documents${e instanceof Error ? `: ${e.message}` : ""}`;
-      if (e instanceof ApiError && e.status === 401) {
-        const detail = String(e.detail || "").toLowerCase();
-        if (detail && !detail.includes("authentication required")) {
-          msg = String(e.detail);
-        } else {
-          msg = "Session not recognized by API. Add CLERK_JWKS_URL to your API environment (see .env.example).";
-        }
-      }
-      setError(msg);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const uploadMutation = useUploadJobDescriptionMutation();
+  const ingestMutation = useIngestDocumentMutation();
+  const deleteMutation = useDeleteDocumentMutation();
+  const deleteAllMutation = useDeleteAllDocumentsMutation();
 
-  useEffect(() => {
-    fetchDocs();
-  }, [fetchDocs]);
-
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const hasProcessing = docs.some((d) => d.status === "processing");
-  useEffect(() => {
-    if (!hasProcessing) return;
-    pollRef.current = setInterval(fetchDocs, POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-  }, [hasProcessing, fetchDocs]);
+  const listError =
+    documentsQueryError && documentsError
+      ? formatDocumentsListError(documentsError)
+      : null;
 
   // Redirect to Interview Setup when processing completes successfully
   useEffect(() => {
@@ -134,98 +99,77 @@ export default function DashboardPage() {
     }
   }, [docs, processingId, router]);
 
-  const handleFileSelect = async (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
     if (!file || file.type !== "application/pdf") {
       setError("Please select a PDF file.");
       return;
     }
-    setUploading(true);
     setError(null);
-    setUploadProgress("Getting upload URL...");
-
-    try {
-      const { document_id, s3_key, upload_url } = await presign(
-        file.name,
-        file.size
-      );
-      setUploadProgress("Uploading to storage...");
-      await uploadToPresignedUrl(upload_url, file);
-      setUploadProgress("Confirming upload...");
-      await confirmUpload(document_id, s3_key);
-      setUploadProgress("Starting processing...");
-      await ingestDocument(document_id);
-      setProcessingId(document_id);
-      setUploadProgress("");
-      await fetchDocs();
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Upload failed"
-      );
-      setUploadProgress("");
-    } finally {
-      setUploading(false);
-      e.target.value = "";
-    }
+    uploadMutation.mutate(file, {
+      onSuccess: (documentId) => {
+        setProcessingId(documentId);
+      },
+      onError: (err) => {
+        setError(
+          err instanceof ApiError
+            ? String(err.detail || err.message)
+            : "Upload failed"
+        );
+      },
+    });
+    e.target.value = "";
   };
 
   const { openLibrary } = useLibrary();
 
-  const handleProcess = async (doc: DocumentSummary) => {
+  const handleProcess = (doc: DocumentSummary) => {
     if (doc.status !== "uploaded") return;
     setProcessingId(doc.id);
     setError(null);
-    try {
-      await ingestDocument(doc.id);
-      await fetchDocs();
-      // Redirect handled by useEffect when doc becomes "ready"
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Failed to start processing"
-      );
-      setProcessingId(null);
-    }
+    ingestMutation.mutate(doc.id, {
+      onError: (e) => {
+        setError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to start processing"
+        );
+        setProcessingId(null);
+      },
+    });
   };
 
-  const handleDelete = async (doc: DocumentSummary) => {
+  const handleDelete = (doc: DocumentSummary) => {
     if (!confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
     setDeletingId(doc.id);
     setError(null);
-    try {
-      await deleteDocument(doc.id);
-      await fetchDocs();
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Failed to delete document"
-      );
-    } finally {
-      setDeletingId(null);
-    }
+    deleteMutation.mutate(doc.id, {
+      onSettled: () => setDeletingId(null),
+      onError: (e) => {
+        setError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to delete document"
+        );
+      },
+    });
   };
 
-  const handleClearAll = async () => {
+  const handleClearAll = () => {
     if (!confirm(`Delete all ${docs.length} documents? This cannot be undone.`)) return;
-    setClearingAll(true);
     setError(null);
-    try {
-      await deleteAllDocuments();
-      await fetchDocs();
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Failed to clear documents"
-      );
-    } finally {
-      setClearingAll(false);
-    }
+    deleteAllMutation.mutate(undefined, {
+      onError: (e) => {
+        setError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to clear documents"
+        );
+      },
+    });
   };
+
+  const displayError = error ?? listError;
 
   return (
     <GradientShell>
@@ -267,18 +211,18 @@ export default function DashboardPage() {
                   type="file"
                   accept="application/pdf"
                   onChange={handleFileSelect}
-                  disabled={uploading}
+                  disabled={uploadMutation.isPending}
                   className="sr-only"
                   aria-label="Upload PDF file"
                 />
-                {uploading ? (
+                {uploadMutation.isPending ? (
                   <div className="flex flex-col items-center gap-4">
                     <div
                       className="h-10 w-10 animate-spin rounded-full border-2 border-white/50 border-t-zenodrift-accent"
                       aria-hidden
                     />
                     <span className="text-sm font-medium text-zenodrift-text-muted">
-                      {uploadProgress}
+                      Uploading and processing…
                     </span>
                   </div>
                 ) : (
@@ -320,18 +264,18 @@ export default function DashboardPage() {
       </section>
 
       {/* Error alert */}
-      {error && (
+      {displayError && (
         <div
           className="rounded-2xl border border-red-200/60 bg-red-50/80 px-5 py-4 text-sm text-red-700 shadow-sm"
           role="alert"
         >
-          {error}
+          {displayError}
         </div>
       )}
 
       {/* Dashboard card: Account Resume + Recent Documents */}
       <section className="dashboard-card px-6 py-6">
-        <AccountResumeSection onResumeChange={fetchDocs} />
+        <AccountResumeSection />
         <div className="mb-3 mt-4 flex items-center justify-between">
           <h2 className="text-xs font-medium uppercase tracking-wider text-zenodrift-text-muted">
             Recent Documents
@@ -339,14 +283,14 @@ export default function DashboardPage() {
           {docs.length > 0 && (
             <button
               onClick={handleClearAll}
-              disabled={clearingAll}
+              disabled={deleteAllMutation.isPending}
               className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
             >
-              {clearingAll ? "Clearing…" : "Clear all"}
+              {deleteAllMutation.isPending ? "Clearing…" : "Clear all"}
             </button>
           )}
         </div>
-        {loading ? (
+        {documentsLoading ? (
           <div className="flex items-center justify-center py-10">
             <div
               className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-zenodrift-accent"
@@ -450,10 +394,18 @@ export default function DashboardPage() {
                   {doc.status === "uploaded" && (
                     <button
                       onClick={() => handleProcess(doc)}
-                      disabled={processingId === doc.id}
+                      disabled={
+                        processingId === doc.id ||
+                        (ingestMutation.isPending &&
+                          ingestMutation.variables === doc.id)
+                      }
                       className="rounded-lg bg-zenodrift-accent px-3 py-2 text-sm font-medium text-white shadow-zenodrift-soft transition-all duration-200 hover:bg-zenodrift-accent-hover hover:shadow-md focus:outline-none focus:ring-2 focus:ring-zenodrift-accent focus:ring-offset-2 disabled:opacity-50"
                     >
-                      {processingId === doc.id ? "Processing…" : "Process"}
+                      {processingId === doc.id ||
+                      (ingestMutation.isPending &&
+                        ingestMutation.variables === doc.id)
+                        ? "Processing…"
+                        : "Process"}
                     </button>
                   )}
                   {doc.status === "ready" && (

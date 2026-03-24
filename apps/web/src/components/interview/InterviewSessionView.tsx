@@ -2,12 +2,8 @@
 
 import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
-import {
-  evaluateAnswer,
-  ApiError,
-  type InterviewQuestion,
-  type InterviewEvaluateResponse,
-} from "@/lib/api";
+import { ApiError, type InterviewQuestion, type InterviewEvaluateResponse } from "@/lib/api";
+import { useEvaluateAnswerMutation } from "@/hooks/use-interview-evaluate";
 import { EvaluationDrawer } from "./EvaluationDrawer";
 import { ReferenceDrawer } from "./ReferenceDrawer";
 
@@ -60,9 +56,9 @@ export function InterviewSessionView({
 }: InterviewSessionViewProps) {
   const [currentIndex, setCurrentIndex] = useState(0);
   const [answerText, setAnswerText] = useState("");
-  const [evaluating, setEvaluating] = useState(false);
   const [evalResult, setEvalResult] = useState<InterviewEvaluateResponse | null>(null);
   const [evalError, setEvalError] = useState<string | null>(null);
+  const evaluateMutation = useEvaluateAnswerMutation(documentId);
   const [evalDrawerOpen, setEvalDrawerOpen] = useState(false);
   const [referenceDrawerOpen, setReferenceDrawerOpen] = useState(false);
   const chatEndRef = useRef<HTMLDivElement>(null);
@@ -72,24 +68,26 @@ export function InterviewSessionView({
   const canNext = currentIndex < session.questions.length - 1;
   const docName = documentFilename.replace(/\.pdf$/i, "");
 
-  const handleSubmit = async () => {
-    if (!currentQuestion || !answerText.trim() || evaluating) return;
-    setEvaluating(true);
+  const handleSubmit = () => {
+    if (!currentQuestion || !answerText.trim() || evaluateMutation.isPending) return;
     setEvalError(null);
     setEvalResult(null);
-    try {
-      const res = await evaluateAnswer(documentId, currentQuestion.id, answerText.trim());
-      setEvalResult(res);
-      setEvalDrawerOpen(true);
-    } catch (e) {
-      setEvalError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Evaluation failed"
-      );
-    } finally {
-      setEvaluating(false);
-    }
+    evaluateMutation.mutate(
+      { questionId: currentQuestion.id, answerText: answerText.trim() },
+      {
+        onSuccess: (res) => {
+          setEvalResult(res);
+          setEvalDrawerOpen(true);
+        },
+        onError: (e) => {
+          setEvalError(
+            e instanceof ApiError
+              ? String(e.detail || e.message)
+              : "Evaluation failed"
+          );
+        },
+      }
+    );
   };
 
   const handleNext = () => {
@@ -169,7 +167,7 @@ export function InterviewSessionView({
                 onChange={(e) => setAnswerText(e.target.value)}
                 placeholder="Type your answer here…"
                 rows={3}
-                disabled={evaluating}
+                disabled={evaluateMutation.isPending}
                 className="w-full resize-none rounded-xl border-0 bg-white/60 px-3 py-2.5 text-sm text-zenodrift-text shadow-inner placeholder-neutral-400 backdrop-blur-sm focus:bg-white/80 focus:ring-2 focus:ring-zenodrift-accent/25 focus:outline-none disabled:opacity-70"
               />
               <div className="flex items-center justify-between gap-2">
@@ -181,10 +179,10 @@ export function InterviewSessionView({
                 </button>
                 <button
                   onClick={handleSubmit}
-                  disabled={evaluating || !answerText.trim()}
+                  disabled={evaluateMutation.isPending || !answerText.trim()}
                   className="rounded-xl bg-zenodrift-accent px-5 py-2 text-sm font-semibold text-white shadow-sm hover:bg-zenodrift-accent-hover focus:outline-none focus:ring-2 focus:ring-zenodrift-accent disabled:opacity-50"
                 >
-                  {evaluating ? "Evaluating…" : "Submit Answer"}
+                  {evaluateMutation.isPending ? "Evaluating…" : "Submit Answer"}
                 </button>
               </div>
               {evalError && (

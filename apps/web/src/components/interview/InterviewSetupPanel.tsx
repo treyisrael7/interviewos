@@ -1,17 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
 import { useRouter } from "next/navigation";
+import { ApiError, type RoleProfile, type CompetencyWithCoverage } from "@/lib/api";
 import {
-  generateInterview,
-  addTextSource,
-  addSourceFromUrl,
-  listSources,
-  ApiError,
-  type RoleProfile,
-  type CompetencyWithCoverage,
-  type SourceSummary,
-} from "@/lib/api";
+  useDocumentSources,
+  useAddInterviewSourceMutation,
+  useGenerateInterviewMutation,
+} from "@/hooks/use-interview-setup";
 
 type Difficulty = "junior" | "mid" | "senior";
 type QuestionMixPreset = "balanced" | "behavioral_heavy" | "scenario_heavy";
@@ -58,20 +54,30 @@ interface InterviewSetupPanelProps {
   coverageTotal?: number;
 }
 
-function useSources(documentId: string) {
-  const [sources, setSources] = useState<SourceSummary[]>([]);
-  const fetchSources = useCallback(async () => {
-    try {
-      const list = await listSources(documentId);
-      setSources(list);
-    } catch {
-      setSources([]);
+function formatGenerateInterviewError(e: unknown): string {
+  let msg = "Failed to start interview";
+  if (e instanceof ApiError && e.detail != null) {
+    const d = e.detail;
+    msg =
+      typeof d === "string"
+        ? d
+        : Array.isArray(d)
+          ? d.map((x: { msg?: string }) => x?.msg ?? JSON.stringify(x)).join(", ")
+          : typeof d === "object" && d !== null && "detail" in d
+            ? String((d as { detail?: unknown }).detail)
+            : JSON.stringify(d);
+  } else if (e instanceof Error) {
+    if (e.message === "Failed to fetch") {
+      msg =
+        "Could not reach the API. Ensure the API is running (e.g. docker compose up api or cd apps/api && uvicorn app.main:app).";
+    } else if (e.name === "AbortError" || e.message.includes("aborted")) {
+      msg =
+        "Interview generation timed out (took longer than 2 minutes). Try again or use fewer questions.";
+    } else {
+      msg = e.message;
     }
-  }, [documentId]);
-  useEffect(() => {
-    fetchSources();
-  }, [fetchSources]);
-  return { sources, refetch: fetchSources };
+  }
+  return msg;
 }
 
 export function InterviewSetupPanel({
@@ -84,7 +90,6 @@ export function InterviewSetupPanel({
   const router = useRouter();
   const [difficulty, setDifficulty] = useState<Difficulty>("junior");
   const [numQuestions, setNumQuestions] = useState(6);
-  const [generating, setGenerating] = useState(false);
   const [genError, setGenError] = useState<string | null>(null);
   const [advancedOpen, setAdvancedOpen] = useState(false);
   const [domainOverride, setDomainOverride] = useState<DomainOverride | "">("");
@@ -94,9 +99,10 @@ export function InterviewSetupPanel({
   const [companyPaste, setCompanyPaste] = useState("");
   const [companyUrl, setCompanyUrl] = useState("");
   const [notesText, setNotesText] = useState("");
-  const [sourceAdding, setSourceAdding] = useState<string | null>(null);
   const [sourceError, setSourceError] = useState<string | null>(null);
-  const { sources, refetch: refetchSources } = useSources(documentId);
+  const { data: sources = [] } = useDocumentSources(documentId);
+  const addSourceMutation = useAddInterviewSourceMutation(documentId);
+  const generateMutation = useGenerateInterviewMutation(documentId);
 
   const roleTitle = roleProfile?.roleTitleGuess?.trim() || "Role";
   const detectedDomain = roleProfile?.domain || "general_business";
@@ -106,86 +112,83 @@ export function InterviewSetupPanel({
     ? competencies.slice(0, 8).map((c) => ({ id: c.id, label: c.label, attempts: c.attempts_count, avgScore: c.avg_score }))
     : focusAreas.slice(0, 8).map((a) => ({ id: a, label: a, attempts: 0, avgScore: null as number | null }));
 
-  const handleAddCompanyPaste = async () => {
+  const handleAddCompanyPaste = () => {
     if (!companyPaste.trim()) return;
-    setSourceAdding("company-paste");
     setSourceError(null);
-    try {
-      await addTextSource(documentId, "company", companyPaste.trim(), "Company");
-      setCompanyPaste("");
-      await refetchSources();
-    } catch (e) {
-      setSourceError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to add company info");
-    } finally {
-      setSourceAdding(null);
-    }
+    addSourceMutation.mutate(
+      {
+        kind: "text",
+        sourceType: "company",
+        content: companyPaste.trim(),
+        title: "Company",
+      },
+      {
+        onSuccess: () => setCompanyPaste(""),
+        onError: (e) =>
+          setSourceError(
+            e instanceof ApiError
+              ? String(e.detail || e.message)
+              : "Failed to add company info"
+          ),
+      }
+    );
   };
 
-  const handleAddCompanyUrl = async () => {
+  const handleAddCompanyUrl = () => {
     const url = companyUrl.trim();
     if (!url || !url.startsWith("http")) return;
-    setSourceAdding("company-url");
     setSourceError(null);
-    try {
-      await addSourceFromUrl(documentId, url);
-      setCompanyUrl("");
-      await refetchSources();
-    } catch (e) {
-      setSourceError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to fetch URL");
-    } finally {
-      setSourceAdding(null);
-    }
+    addSourceMutation.mutate(
+      { kind: "url", url },
+      {
+        onSuccess: () => setCompanyUrl(""),
+        onError: (e) =>
+          setSourceError(
+            e instanceof ApiError
+              ? String(e.detail || e.message)
+              : "Failed to fetch URL"
+          ),
+      }
+    );
   };
 
-  const handleAddNotes = async () => {
+  const handleAddNotes = () => {
     if (!notesText.trim()) return;
-    setSourceAdding("notes");
     setSourceError(null);
-    try {
-      await addTextSource(documentId, "notes", notesText.trim(), "Notes");
-      setNotesText("");
-      await refetchSources();
-    } catch (e) {
-      setSourceError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to add notes");
-    } finally {
-      setSourceAdding(null);
-    }
+    addSourceMutation.mutate(
+      {
+        kind: "text",
+        sourceType: "notes",
+        content: notesText.trim(),
+        title: "Notes",
+      },
+      {
+        onSuccess: () => setNotesText(""),
+        onError: (e) =>
+          setSourceError(
+            e instanceof ApiError
+              ? String(e.detail || e.message)
+              : "Failed to add notes"
+          ),
+      }
+    );
   };
 
   const handleStartInterview = async () => {
-    setGenerating(true);
     setGenError(null);
     try {
-      const res = await generateInterview(documentId, difficulty, numQuestions, {
-        domain_override: domainOverride || undefined,
-        seniority_override: seniorityOverride || undefined,
-        question_mix_preset: questionMixPreset || undefined,
+      const res = await generateMutation.mutateAsync({
+        difficulty,
+        numQuestions,
+        overrides: {
+          domain_override: domainOverride || undefined,
+          seniority_override: seniorityOverride || undefined,
+          question_mix_preset: questionMixPreset || undefined,
+        },
       });
       router.push(`/interview/session/${res.session_id}`);
     } catch (e) {
-      let msg = "Failed to start interview";
-      if (e instanceof ApiError && e.detail != null) {
-        const d = e.detail;
-        msg =
-          typeof d === "string"
-            ? d
-            : Array.isArray(d)
-              ? d.map((x: { msg?: string }) => x?.msg ?? JSON.stringify(x)).join(", ")
-              : typeof d === "object" && d !== null && "detail" in d
-                ? String((d as { detail?: unknown }).detail)
-                : JSON.stringify(d);
-      } else if (e instanceof Error) {
-        if (e.message === "Failed to fetch") {
-          msg = "Could not reach the API. Ensure the API is running (e.g. docker compose up api or cd apps/api && uvicorn app.main:app).";
-        } else if (e.name === "AbortError" || e.message.includes("aborted")) {
-          msg = "Interview generation timed out (took longer than 2 minutes). Try again or use fewer questions.";
-        } else {
-          msg = e.message;
-        }
-      }
-      setGenError(msg);
-    } finally {
-      setGenerating(false);
+      setGenError(formatGenerateInterviewError(e));
     }
   };
 
@@ -293,10 +296,14 @@ export function InterviewSetupPanel({
                 />
                 <button
                   onClick={handleAddCompanyUrl}
-                  disabled={!companyUrl.trim() || !companyUrl.startsWith("http") || !!sourceAdding}
+                  disabled={
+                    !companyUrl.trim() ||
+                    !companyUrl.startsWith("http") ||
+                    addSourceMutation.isPending
+                  }
                   className="shrink-0 rounded-lg bg-white/80 px-3 py-2 text-xs font-medium text-zenodrift-accent hover:bg-white disabled:opacity-50"
                 >
-                  {sourceAdding === "company-url" ? "Fetching…" : "Add"}
+                  {addSourceMutation.isPending ? "Fetching…" : "Add"}
                 </button>
               </div>
               <div className="flex gap-2">
@@ -309,10 +316,10 @@ export function InterviewSetupPanel({
                 />
                 <button
                   onClick={handleAddCompanyPaste}
-                  disabled={!companyPaste.trim() || !!sourceAdding}
+                  disabled={!companyPaste.trim() || addSourceMutation.isPending}
                   className="shrink-0 self-end rounded-lg bg-white/80 px-3 py-2 text-xs font-medium text-zenodrift-accent hover:bg-white disabled:opacity-50"
                 >
-                  {sourceAdding === "company-paste" ? "…" : "Add"}
+                  {addSourceMutation.isPending ? "…" : "Add"}
                 </button>
               </div>
             </div>
@@ -330,10 +337,10 @@ export function InterviewSetupPanel({
                 />
                 <button
                   onClick={handleAddNotes}
-                  disabled={!notesText.trim() || !!sourceAdding}
+                  disabled={!notesText.trim() || addSourceMutation.isPending}
                   className="shrink-0 self-end rounded-lg bg-white/80 px-3 py-2 text-xs font-medium text-zenodrift-accent hover:bg-white disabled:opacity-50"
                 >
-                  {sourceAdding === "notes" ? "…" : "Add"}
+                  {addSourceMutation.isPending ? "…" : "Add"}
                 </button>
               </div>
             </div>
@@ -427,10 +434,10 @@ export function InterviewSetupPanel({
       )}
       <button
         onClick={handleStartInterview}
-        disabled={generating}
+        disabled={generateMutation.isPending}
         className="w-full rounded-xl bg-gradient-to-r from-orange-500 to-orange-600 py-4 text-lg font-semibold text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-zenodrift-accent focus:ring-offset-2 disabled:opacity-50 disabled:hover:translate-y-0 disabled:hover:shadow-lg"
       >
-        {generating ? "Starting…" : "Start Interview"}
+        {generateMutation.isPending ? "Starting…" : "Start Interview"}
       </button>
     </div>
   );

@@ -1,66 +1,25 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
 import { InterviewSetupPanel } from "@/components/interview/InterviewSetupPanel";
-import {
-  getDocument,
-  ApiError,
-  type DocumentSummary,
-} from "@/lib/api";
-
-const POLL_INTERVAL_MS = 2000;
+import { formatQueryError } from "@/lib/query-error";
+import { useDocument } from "@/hooks/use-documents";
 
 export default function InterviewSetupPage() {
   const params = useParams();
   const id = params.id as string;
-  const [doc, setDoc] = useState<DocumentSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
 
-  const fetchDoc = useCallback(async () => {
-    try {
-      setError(null);
-      const d = await getDocument(id);
-      setDoc(d);
-      return d;
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Failed to load document"
-      );
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const {
+    data: doc,
+    isPending: loading,
+    isError,
+    error: loadError,
+  } = useDocument(id);
 
-  useEffect(() => {
-    fetchDoc();
-  }, [fetchDoc]);
-
-  useEffect(() => {
-    if (!doc || doc.status !== "processing") return;
-    pollRef.current = setInterval(fetchDoc, POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- doc omitted to avoid polling loop
-  }, [doc?.status, fetchDoc]);
-
-  useEffect(() => {
-    if (doc?.status !== "processing" && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, [doc?.status]);
+  const queryError =
+    isError && loadError ? formatQueryError(loadError) : null;
 
   const showSetup =
     doc?.status === "ready" && doc?.doc_domain === "job_description";
@@ -96,12 +55,12 @@ export default function InterviewSetupPage() {
         </div>
       )}
 
-      {error && !doc && (
+      {queryError && !doc && !loading && (
         <div
           className="dashboard-card w-full max-w-md border-red-200/50 bg-red-50/60 p-5 text-red-700"
           role="alert"
         >
-          {error}
+          {queryError}
           <Link
             href="/dashboard"
             className="mt-4 block text-sm font-medium text-zenodrift-accent hover:text-zenodrift-accent-hover focus:outline-none focus-visible:underline"

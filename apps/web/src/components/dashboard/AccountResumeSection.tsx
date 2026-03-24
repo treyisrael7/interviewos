@@ -1,83 +1,65 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useState } from "react";
+import { ApiError } from "@/lib/api";
+import { formatQueryError } from "@/lib/query-error";
 import {
-  getUserResume,
-  presignUserResume,
-  uploadToPresignedUrl,
-  confirmUserResume,
-  deleteUserResume,
-  ApiError,
-} from "@/lib/api";
+  useUserResume,
+  useUploadUserResumeMutation,
+  useDeleteUserResumeMutation,
+} from "@/hooks/use-user-resume";
 
-interface AccountResumeSectionProps {
-  onResumeChange?: () => void;
-}
-
-export function AccountResumeSection({ onResumeChange }: AccountResumeSectionProps) {
+export function AccountResumeSection() {
   const [expanded, setExpanded] = useState(false);
-  const [hasResume, setHasResume] = useState(false);
-  const [filename, setFilename] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
   const [resumeFile, setResumeFile] = useState<File | null>(null);
-  const [uploading, setUploading] = useState(false);
-  const [deleting, setDeleting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const fetchStatus = useCallback(async () => {
-    try {
-      setError(null);
-      const status = await getUserResume();
-      setHasResume(status.has_resume);
-      setFilename(status.filename ?? null);
-    } catch (e) {
-      setError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to load resume status");
-      setHasResume(false);
-      setFilename(null);
-    } finally {
-      setLoading(false);
-    }
-  }, []);
+  const { data, isPending: loading, isError, error: queryError } = useUserResume();
+  const hasResume = data?.has_resume ?? false;
+  const filename = data?.filename ?? null;
 
-  useEffect(() => {
-    fetchStatus();
-  }, [fetchStatus]);
+  const uploadMutation = useUploadUserResumeMutation();
+  const deleteMutation = useDeleteUserResumeMutation();
 
-  const refetch = useCallback(async () => {
-    await fetchStatus();
-    onResumeChange?.();
-  }, [fetchStatus, onResumeChange]);
+  const displayError =
+    error ??
+    (isError && queryError ? formatQueryError(queryError) : null);
 
-  const handleAddResumeFile = async () => {
+  const handleAddResumeFile = () => {
     const file = resumeFile;
     if (!file || file.type !== "application/pdf") return;
-    setUploading(true);
     setError(null);
-    try {
-      const { s3_key, upload_url } = await presignUserResume(file.name, file.size);
-      await uploadToPresignedUrl(upload_url, file);
-      await confirmUserResume(s3_key);
-      setResumeFile(null);
-      await refetch();
-    } catch (e) {
-      setError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to upload resume");
-    } finally {
-      setUploading(false);
-    }
+    uploadMutation.mutate(file, {
+      onSuccess: () => {
+        setResumeFile(null);
+      },
+      onError: (e) => {
+        setError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to upload resume"
+        );
+      },
+    });
   };
 
-  const handleDelete = async () => {
-    if (!confirm("Remove your account resume? It will no longer be used for interview feedback.")) return;
-    setDeleting(true);
+  const handleDelete = () => {
+    if (
+      !confirm(
+        "Remove your account resume? It will no longer be used for interview feedback."
+      )
+    )
+      return;
     setError(null);
-    try {
-      await deleteUserResume();
-      await refetch();
-    } catch (e) {
-      setError(e instanceof ApiError ? String(e.detail || e.message) : "Failed to delete resume");
-    } finally {
-      setDeleting(false);
-    }
+    deleteMutation.mutate(undefined, {
+      onError: (e) => {
+        setError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to delete resume"
+        );
+      },
+    });
   };
 
   return (
@@ -105,9 +87,9 @@ export function AccountResumeSection({ onResumeChange }: AccountResumeSectionPro
       </button>
       {expanded && (
         <div className="space-y-2 border-t border-white/20 px-3 py-3">
-          {error && (
+          {displayError && (
             <p className="text-xs text-red-600" role="alert">
-              {error}
+              {displayError}
             </p>
           )}
           {loading ? (
@@ -131,20 +113,20 @@ export function AccountResumeSection({ onResumeChange }: AccountResumeSectionPro
                 {resumeFile && (
                   <button
                     onClick={handleAddResumeFile}
-                    disabled={uploading}
+                    disabled={uploadMutation.isPending}
                     className="rounded-lg bg-white/60 px-2.5 py-1.5 text-xs font-medium text-zenodrift-accent hover:bg-white/80 disabled:opacity-50"
                   >
-                    {uploading ? "Uploading…" : "Add"}
+                    {uploadMutation.isPending ? "Uploading…" : "Add"}
                   </button>
                 )}
               </div>
               {hasResume && (
                 <button
                   onClick={handleDelete}
-                  disabled={deleting}
+                  disabled={deleteMutation.isPending}
                   className="text-xs font-medium text-red-600 hover:text-red-700 disabled:opacity-50"
                 >
-                  {deleting ? "Removing…" : "Remove resume"}
+                  {deleteMutation.isPending ? "Removing…" : "Remove resume"}
                 </button>
               )}
             </>

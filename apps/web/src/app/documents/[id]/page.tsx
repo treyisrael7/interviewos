@@ -1,20 +1,14 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
 import { InterviewFocusMode } from "@/components/interview/InterviewFocusMode";
-import {
-  getDocument,
-  ask,
-  deleteDocument,
-  ApiError,
-  type DocumentSummary,
-  type AskResponse,
-} from "@/lib/api";
-
-const POLL_INTERVAL_MS = 2000;
+import { ApiError, type AskResponse } from "@/lib/api";
+import { formatQueryError } from "@/lib/query-error";
+import { useDocument, useDeleteDocumentMutation } from "@/hooks/use-documents";
+import { useAskQuestionMutation } from "@/hooks/use-ask-question";
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
   uploaded: "Uploaded",
@@ -41,70 +35,38 @@ export default function DocumentPage() {
   const params = useParams();
   const router = useRouter();
   const id = params.id as string;
-  const [deleting, setDeleting] = useState(false);
   const [tab, setTab] = useState<Tab>("chat");
-  const [doc, setDoc] = useState<DocumentSummary | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
-  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const [actionError, setActionError] = useState<string | null>(null);
 
-  const fetchDoc = useCallback(async () => {
-    try {
-      setError(null);
-      const d = await getDocument(id);
-      setDoc(d);
-      return d;
-    } catch (e) {
-      setError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Failed to load document"
-      );
-      return null;
-    } finally {
-      setLoading(false);
-    }
-  }, [id]);
+  const {
+    data: doc,
+    isPending: loading,
+    isError,
+    error: loadError,
+  } = useDocument(id);
 
-  useEffect(() => {
-    fetchDoc();
-  }, [fetchDoc]);
+  const deleteMutation = useDeleteDocumentMutation();
 
-  useEffect(() => {
-    if (!doc || doc.status !== "processing") return;
-    pollRef.current = setInterval(fetchDoc, POLL_INTERVAL_MS);
-    return () => {
-      if (pollRef.current) {
-        clearInterval(pollRef.current);
-        pollRef.current = null;
-      }
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- doc omitted to avoid polling loop
-  }, [doc?.status, fetchDoc]);
-
-  useEffect(() => {
-    if (doc?.status !== "processing" && pollRef.current) {
-      clearInterval(pollRef.current);
-      pollRef.current = null;
-    }
-  }, [doc?.status]);
+  const queryError =
+    isError && loadError ? formatQueryError(loadError) : null;
+  const error = actionError ?? queryError;
 
   const showInterviewPrep =
     doc?.status === "ready" && doc?.doc_domain === "job_description";
 
-  const handleDelete = async () => {
+  const handleDelete = () => {
     if (!doc || !confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
-    setDeleting(true);
-    try {
-      await deleteDocument(id);
-      router.push("/dashboard");
-    } catch (e) {
-      setError(
-        e instanceof ApiError ? String(e.detail || e.message) : "Failed to delete document"
-      );
-    } finally {
-      setDeleting(false);
-    }
+    setActionError(null);
+    deleteMutation.mutate(id, {
+      onSuccess: () => router.push("/dashboard"),
+      onError: (e) => {
+        setActionError(
+          e instanceof ApiError
+            ? String(e.detail || e.message)
+            : "Failed to delete document"
+        );
+      },
+    });
   };
 
   return (
@@ -118,7 +80,7 @@ export default function DocumentPage() {
         </div>
       )}
 
-      {error && !doc && (
+      {error && !doc && !loading && (
         <div
           className="dashboard-card w-full max-w-2xl border-red-200/50 bg-red-50/60 p-5 text-red-700"
           role="alert"
@@ -135,6 +97,15 @@ export default function DocumentPage() {
 
       {doc && !loading && (
         <div className="dashboard-card flex flex-col overflow-hidden">
+          {actionError && (
+            <div
+              className="border-b border-red-100 bg-red-50/80 px-6 py-3 text-sm text-red-700 sm:px-8"
+              role="alert"
+            >
+              {actionError}
+            </div>
+          )}
+
           {/* Header row */}
           <div className="flex flex-wrap items-center justify-between gap-3 border-b border-neutral-100/80 px-6 py-4 sm:px-8">
             <div className="flex min-w-0 flex-1 items-center gap-3">
@@ -154,10 +125,10 @@ export default function DocumentPage() {
             <div className="flex items-center gap-2">
               <button
                 onClick={handleDelete}
-                disabled={deleting}
+                disabled={deleteMutation.isPending}
                 className="rounded-lg border border-red-200 px-3 py-1.5 text-sm font-medium text-red-600 transition-colors hover:bg-red-50 disabled:opacity-50"
               >
-                {deleting ? "Deleting…" : "Delete"}
+                {deleteMutation.isPending ? "Deleting…" : "Delete"}
               </button>
               <span
                 className={`shrink-0 rounded-full px-2.5 py-1 text-xs font-medium ${
@@ -254,29 +225,26 @@ export default function DocumentPage() {
 
 function ChatTab({ documentId }: { documentId: string }) {
   const [question, setQuestion] = useState("");
-  const [asking, setAsking] = useState(false);
   const [answerData, setAnswerData] = useState<AskResponse | null>(null);
   const [askError, setAskError] = useState<string | null>(null);
+  const askMutation = useAskQuestionMutation(documentId);
 
-  const handleAsk = async (e: React.FormEvent) => {
+  const handleAsk = (e: React.FormEvent) => {
     e.preventDefault();
     const q = question.trim();
-    if (!q || asking) return;
-    setAsking(true);
+    if (!q || askMutation.isPending) return;
     setAskError(null);
     setAnswerData(null);
-    try {
-      const res = await ask(documentId, q);
-      setAnswerData(res);
-    } catch (e) {
-      setAskError(
-        e instanceof ApiError
-          ? String(e.detail || e.message)
-          : "Request failed"
-      );
-    } finally {
-      setAsking(false);
-    }
+    askMutation.mutate(q, {
+      onSuccess: (res) => setAnswerData(res),
+      onError: (err) => {
+        setAskError(
+          err instanceof ApiError
+            ? String(err.detail || err.message)
+            : "Request failed"
+        );
+      },
+    });
   };
 
   return (
@@ -288,15 +256,15 @@ function ChatTab({ documentId }: { documentId: string }) {
             value={question}
             onChange={(e) => setQuestion(e.target.value)}
             placeholder="Ask a question about this document..."
-            disabled={asking}
+            disabled={askMutation.isPending}
             className="flex-1 rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-zenodrift-text-strong shadow-sm ring-1 ring-slate-200/60 placeholder-zenodrift-text-muted transition-colors focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
           />
           <button
             type="submit"
-            disabled={asking || !question.trim()}
+            disabled={askMutation.isPending || !question.trim()}
             className="rounded-xl bg-slate-900 px-6 py-3 font-medium text-white shadow-sm transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 disabled:opacity-50"
           >
-            {asking ? "..." : "Ask"}
+            {askMutation.isPending ? "..." : "Ask"}
           </button>
         </div>
       </form>
