@@ -6,10 +6,7 @@ Built with Next.js, FastAPI, PostgreSQL + pgvector, and OpenAI. Local dev uses a
 
 ## Getting started
 
-Copy `.env.example` to `.env`, then add your `OPENAI_API_KEY` (you’ll need it for ingestion and Q&A). For auth, you can either:
-
-- **Use Clerk** – Create an app at [clerk.com](https://clerk.com), then add `CLERK_JWKS_URL` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` to `.env`
-- **Skip auth** – Set `DEMO_KEY` and `NEXT_PUBLIC_DEMO_KEY` to use the API without sign-in
+Copy `.env.example` to `.env`, then add your `OPENAI_API_KEY` (you’ll need it for ingestion and Q&A). The web app signs in with **Clerk** — create an app at [clerk.com](https://clerk.com), then add `CLERK_JWKS_URL` and `NEXT_PUBLIC_CLERK_PUBLISHABLE_KEY` to `.env`. The API can also run a separate **demo sandbox** (`DEMO_MODE_ENABLED` + `DEMO_KEY`) for tools like `curl`; the Next.js client always uses Clerk Bearer tokens only.
 
 Then:
 

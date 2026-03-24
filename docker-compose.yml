@@ -58,7 +58,6 @@ services:
       - "3001:3000"  # use 3001 if 3000 is taken by local dev
     environment:
       NEXT_PUBLIC_API_BASE_URL: http://localhost:8000
-      NEXT_PUBLIC_DEMO_KEY: ${DEMO_KEY:-}
       BASIC_AUTH_USER: ${BASIC_AUTH_USER:-}
       BASIC_AUTH_PASSWORD: ${BASIC_AUTH_PASSWORD:-}
     depends_on:

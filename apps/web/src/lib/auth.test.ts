@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getAuthToken, setAuthTokenProvider } from "./auth";
+import { getAuthToken, hasAuthTokenProvider, setAuthTokenProvider } from "./auth";
 
 describe("auth", () => {
   beforeEach(() => {
@@ -10,7 +10,15 @@ describe("auth", () => {
     setAuthTokenProvider(() => Promise.resolve(null));
   });
 
-  it("getAuthToken returns null when no provider set", async () => {
+  it("hasAuthTokenProvider is false before any setAuthTokenProvider (fresh module)", async () => {
+    vi.resetModules();
+    const { hasAuthTokenProvider: hasProv, setAuthTokenProvider: setProv } = await import("./auth");
+    expect(hasProv()).toBe(false);
+    setProv(() => Promise.resolve(null));
+    expect(hasProv()).toBe(true);
+  });
+
+  it("getAuthToken returns null when provider returns null", async () => {
     setAuthTokenProvider(() => Promise.resolve(null));
     expect(await getAuthToken()).toBeNull();
   });
@@ -20,8 +28,4 @@ describe("auth", () => {
     expect(await getAuthToken()).toBe("jwt-token-123");
   });
 
-  it("getAuthToken returns null when provider returns null", async () => {
-    setAuthTokenProvider(() => Promise.resolve(null));
-    expect(await getAuthToken()).toBeNull();
-  });
 });

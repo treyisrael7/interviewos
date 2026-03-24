@@ -1,41 +1,39 @@
 /**
  * API client for InterviewOS backend.
- * When Clerk is used: passes Bearer token, backend gets user from JWT.
- * When demo mode: passes user_id + x-demo-key.
+ * Identity comes only from the Clerk session (Bearer token); never from client-supplied user ids.
  */
 
-import { getAuthToken } from "./auth";
+import { getAuthToken, hasAuthTokenProvider } from "./auth";
 
 const API_BASE = process.env.NEXT_PUBLIC_API_BASE_URL || "http://localhost:8000";
-const DEMO_KEY = process.env.NEXT_PUBLIC_DEMO_KEY || "";
-const DEMO_USER_ID = "11111111-1111-1111-1111-111111111111";
 
-export async function getAuthHeaders(): Promise<HeadersInit> {
-  const h: Record<string, string> = {
-    "Content-Type": "application/json",
-  };
-  const token = await getAuthToken();
-  if (token) {
-    h["Authorization"] = `Bearer ${token}`;
-  } else if (DEMO_KEY) {
-    h["x-demo-key"] = DEMO_KEY;
+/** Thrown when a request needs a signed-in user but no Clerk token is available. */
+export class AuthRequiredError extends Error {
+  constructor(message: string) {
+    super(message);
+    this.name = "AuthRequiredError";
   }
-  return h;
 }
 
-/** Include user_id in params only when using demo mode (no Clerk token) */
-async function withUserId<T extends Record<string, unknown>>(params: T): Promise<T & { user_id?: string }> {
+/**
+ * JSON headers including Authorization: Bearer <token>.
+ * @throws AuthRequiredError if Clerk is not wired or the user has no session token.
+ */
+export async function getAuthHeaders(): Promise<HeadersInit> {
+  if (!hasAuthTokenProvider()) {
+    throw new AuthRequiredError(
+      "API authentication is not initialized. Ensure the app is wrapped with ClerkAuthProvider."
+    );
+  }
   const token = await getAuthToken();
-  if (token) return params;
-  return { ...params, user_id: DEMO_USER_ID };
-}
-
-/** Build query string; omit user_id when using Clerk */
-async function queryWithUserId(params: Record<string, string>): Promise<string> {
-  const token = await getAuthToken();
-  const p = { ...params };
-  if (!token) p.user_id = DEMO_USER_ID;
-  return new URLSearchParams(p).toString();
+  const trimmed = token?.trim() ?? "";
+  if (!trimmed) {
+    throw new AuthRequiredError("You must be signed in to use this feature.");
+  }
+  return {
+    "Content-Type": "application/json",
+    Authorization: `Bearer ${trimmed}`,
+  };
 }
 
 export interface RoleProfile {
@@ -118,38 +116,29 @@ async function handleResponse<T>(res: Response): Promise<T> {
 }
 
 export async function listDocuments(): Promise<DocumentSummary[]> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/documents?${q}`,
-    { headers: await getAuthHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/documents`, {
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<DocumentSummary[]>(res);
 }
 
 export async function getDocument(id: string): Promise<DocumentSummary> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/documents/${id}?${q}`,
-    { headers: await getAuthHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/documents/${id}`, {
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<DocumentSummary>(res);
 }
 
 export async function deleteDocument(id: string): Promise<void> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/documents/${id}?${q}`,
-    {
-      method: "DELETE",
-      headers: await getAuthHeaders(),
-    }
-  );
+  const res = await fetch(`${API_BASE}/documents/${id}`, {
+    method: "DELETE",
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<void>(res);
 }
 
 export async function deleteAllDocuments(): Promise<{ count: number }> {
-  const q = await queryWithUserId({});
-  const res = await fetch(`${API_BASE}/documents?${q}`, {
+  const res = await fetch(`${API_BASE}/documents`, {
     method: "DELETE",
     headers: await getAuthHeaders(),
   });
@@ -160,15 +149,14 @@ export async function presign(
   filename: string,
   fileSizeBytes: number
 ): Promise<PresignResponse> {
-  const body = await withUserId({
-    filename,
-    content_type: "application/pdf",
-    file_size_bytes: fileSizeBytes,
-  });
   const res = await fetch(`${API_BASE}/documents/presign`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      filename,
+      content_type: "application/pdf",
+      file_size_bytes: fileSizeBytes,
+    }),
   });
   return handleResponse<PresignResponse>(res);
 }
@@ -191,21 +179,19 @@ export async function confirmUpload(
   documentId: string,
   s3Key: string
 ): Promise<{ status: string }> {
-  const body = await withUserId({ document_id: documentId, s3_key: s3Key });
   const res = await fetch(`${API_BASE}/documents/confirm`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({ document_id: documentId, s3_key: s3Key }),
   });
   return handleResponse<{ status: string }>(res);
 }
 
 export async function ingestDocument(documentId: string): Promise<{ status: string }> {
-  const body = await withUserId({});
   const res = await fetch(`${API_BASE}/documents/${documentId}/ingest`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({}),
   });
   return handleResponse<{ status: string }>(res);
 }
@@ -219,11 +205,9 @@ export interface SourceSummary {
 }
 
 export async function listSources(documentId: string): Promise<SourceSummary[]> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/documents/${documentId}/sources?${q}`,
-    { headers: await getAuthHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/documents/${documentId}/sources`, {
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<SourceSummary[]>(res);
 }
 
@@ -233,36 +217,46 @@ export async function addTextSource(
   content: string,
   title?: string
 ): Promise<{ source_id: string; status: string }> {
-  const body = await withUserId({
-    source_type: sourceType,
-    title: title || "",
-    content,
-  });
   const res = await fetch(`${API_BASE}/documents/${documentId}/sources/add-text`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      source_type: sourceType,
+      title: title || "",
+      content,
+    }),
   });
   return handleResponse<{ source_id: string; status: string }>(res);
 }
 
-export async function presignResume(documentId: string, filename: string, fileSizeBytes: number): Promise<{ s3_key: string; upload_url: string; method: string }> {
-  const body = await withUserId({ filename, file_size_bytes: fileSizeBytes });
-  const res = await fetch(`${API_BASE}/documents/${documentId}/sources/presign-resume`, {
-    method: "POST",
-    headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
-  });
+export async function presignResume(
+  documentId: string,
+  filename: string,
+  fileSizeBytes: number
+): Promise<{ s3_key: string; upload_url: string; method: string }> {
+  const res = await fetch(
+    `${API_BASE}/documents/${documentId}/sources/presign-resume`,
+    {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ filename, file_size_bytes: fileSizeBytes }),
+    }
+  );
   return handleResponse<{ s3_key: string; upload_url: string; method: string }>(res);
 }
 
-export async function ingestResume(documentId: string, s3Key: string): Promise<{ source_id: string; status: string }> {
-  const body = await withUserId({ s3_key: s3Key });
-  const res = await fetch(`${API_BASE}/documents/${documentId}/sources/ingest-resume`, {
-    method: "POST",
-    headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
-  });
+export async function ingestResume(
+  documentId: string,
+  s3Key: string
+): Promise<{ source_id: string; status: string }> {
+  const res = await fetch(
+    `${API_BASE}/documents/${documentId}/sources/ingest-resume`,
+    {
+      method: "POST",
+      headers: await getAuthHeaders(),
+      body: JSON.stringify({ s3_key: s3Key }),
+    }
+  );
   return handleResponse<{ source_id: string; status: string }>(res);
 }
 
@@ -292,7 +286,9 @@ export async function presignUserResume(
   return handleResponse<{ s3_key: string; upload_url: string; method: string }>(res);
 }
 
-export async function confirmUserResume(s3Key: string): Promise<{ source_id: string; status: string; document_id: string }> {
+export async function confirmUserResume(
+  s3Key: string
+): Promise<{ source_id: string; status: string; document_id: string }> {
   const res = await fetch(`${API_BASE}/user/resume`, {
     method: "POST",
     headers: await getAuthHeaders(),
@@ -314,14 +310,13 @@ export async function addSourceFromUrl(
   url: string,
   title?: string
 ): Promise<{ source_id: string; status: string }> {
-  const body = await withUserId({
-    url,
-    title: title || "Company / About",
-  });
   const res = await fetch(`${API_BASE}/documents/${documentId}/sources/add-from-url`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      url,
+      title: title || "Company / About",
+    }),
   });
   return handleResponse<{ source_id: string; status: string }>(res);
 }
@@ -330,11 +325,10 @@ export async function ask(
   documentId: string,
   question: string
 ): Promise<AskResponse> {
-  const body = await withUserId({ document_id: documentId, question });
   const res = await fetch(`${API_BASE}/ask`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({ document_id: documentId, question }),
   });
   return handleResponse<AskResponse>(res);
 }
@@ -401,6 +395,7 @@ export interface InterviewSessionSummary {
   question_count: number;
 }
 
+/** Session detail as returned by the API (user_id is server-owned, not sent by the client). */
 export interface InterviewSessionDetail {
   id: string;
   user_id: string;
@@ -424,18 +419,17 @@ export async function generateInterview(
   numQuestions: number,
   overrides?: InterviewGenerateOverrides
 ): Promise<InterviewGenerateResponse> {
-  const base: Record<string, unknown> = {
+  const body: Record<string, unknown> = {
     document_id: documentId,
     difficulty,
     num_questions: numQuestions,
   };
-  if (overrides?.domain_override) base.domain_override = overrides.domain_override;
-  if (overrides?.seniority_override) base.seniority_override = overrides.seniority_override;
-  if (overrides?.question_mix_preset) base.question_mix_preset = overrides.question_mix_preset;
-  const body = await withUserId(base);
+  if (overrides?.domain_override) body.domain_override = overrides.domain_override;
+  if (overrides?.seniority_override) body.seniority_override = overrides.seniority_override;
+  if (overrides?.question_mix_preset) body.question_mix_preset = overrides.question_mix_preset;
 
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 120_000); // 2 min for LLM
+  const timeoutId = setTimeout(() => controller.abort(), 120_000);
   try {
     const res = await fetch(`${API_BASE}/interview/generate`, {
       method: "POST",
@@ -454,36 +448,30 @@ export async function evaluateAnswer(
   questionId: string,
   answerText: string
 ): Promise<InterviewEvaluateResponse> {
-  const body = await withUserId({
-    document_id: documentId,
-    question_id: questionId,
-    answer_text: answerText,
-  });
   const res = await fetch(`${API_BASE}/interview/evaluate`, {
     method: "POST",
     headers: await getAuthHeaders(),
-    body: JSON.stringify(body),
+    body: JSON.stringify({
+      document_id: documentId,
+      question_id: questionId,
+      answer_text: answerText,
+    }),
   });
   return handleResponse<InterviewEvaluateResponse>(res);
 }
 
 export async function listInterviewSessions(): Promise<InterviewSessionSummary[]> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/interview/sessions?${q}`,
-    { headers: await getAuthHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/interview/sessions`, {
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<InterviewSessionSummary[]>(res);
 }
 
 export async function getInterviewSession(
   sessionId: string
 ): Promise<InterviewSessionDetail> {
-  const q = await queryWithUserId({});
-  const res = await fetch(
-    `${API_BASE}/interview/sessions/${sessionId}?${q}`,
-    { headers: await getAuthHeaders() }
-  );
+  const res = await fetch(`${API_BASE}/interview/sessions/${sessionId}`, {
+    headers: await getAuthHeaders(),
+  });
   return handleResponse<InterviewSessionDetail>(res);
 }
-

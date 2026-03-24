@@ -11,9 +11,7 @@ COPY --from=deps /app/node_modules ./node_modules
 COPY . .
 # NEXT_PUBLIC_* must be set at build time (baked into client bundle)
 ARG NEXT_PUBLIC_API_BASE_URL=http://localhost:8000
-ARG NEXT_PUBLIC_DEMO_KEY
 ENV NEXT_PUBLIC_API_BASE_URL=$NEXT_PUBLIC_API_BASE_URL
-ENV NEXT_PUBLIC_DEMO_KEY=$NEXT_PUBLIC_DEMO_KEY
 RUN npm run build
 
 FROM base AS runner

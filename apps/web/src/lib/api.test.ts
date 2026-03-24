@@ -3,7 +3,7 @@ import { setAuthTokenProvider } from "./auth";
 
 describe("api", () => {
   beforeEach(() => {
-    setAuthTokenProvider(() => Promise.resolve(null));
+    setAuthTokenProvider(() => Promise.resolve("test-jwt-token"));
   });
 
   afterEach(() => {
@@ -20,27 +20,22 @@ describe("api", () => {
       expect(h["Content-Type"]).toBe("application/json");
     });
 
-    it("omits Authorization when no token", async () => {
+    it("throws AuthRequiredError when provider returns null", async () => {
       setAuthTokenProvider(() => Promise.resolve(null));
-      const { getAuthHeaders } = await import("./api");
-      const headers = await getAuthHeaders();
-      const h = headers as Record<string, string>;
-      expect(h["Authorization"]).toBeUndefined();
-      expect(h["Content-Type"]).toBe("application/json");
+      const { getAuthHeaders, AuthRequiredError } = await import("./api");
+      await expect(getAuthHeaders()).rejects.toThrow(AuthRequiredError);
+      await expect(getAuthHeaders()).rejects.toThrow(/signed in/i);
     });
 
-    it("prefers Bearer when token present", async () => {
-      setAuthTokenProvider(() => Promise.resolve("clerk-token"));
-      const { getAuthHeaders } = await import("./api");
-      const headers = await getAuthHeaders();
-      const h = headers as Record<string, string>;
-      expect(h["Authorization"]).toBe("Bearer clerk-token");
+    it("throws AuthRequiredError when provider returns only whitespace", async () => {
+      setAuthTokenProvider(() => Promise.resolve("   \t  "));
+      const { getAuthHeaders, AuthRequiredError } = await import("./api");
+      await expect(getAuthHeaders()).rejects.toThrow(AuthRequiredError);
     });
   });
 
   describe("listDocuments", () => {
-    it("includes user_id in query when no token (demo mode)", async () => {
-      setAuthTokenProvider(() => Promise.resolve(null));
+    it("calls /documents without user_id query", async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         text: () => Promise.resolve(JSON.stringify([])),
@@ -51,23 +46,10 @@ describe("api", () => {
       await listDocuments();
 
       expect(mockFetch).toHaveBeenCalledTimes(1);
-      const [url] = mockFetch.mock.calls[0];
-      expect(url).toContain("user_id=11111111-1111-1111-1111-111111111111");
-    });
-
-    it("omits user_id from query when token present (Clerk mode)", async () => {
-      setAuthTokenProvider(() => Promise.resolve("clerk-token"));
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify([])),
-      });
-      vi.stubGlobal("fetch", mockFetch);
-
-      const { listDocuments } = await import("./api");
-      await listDocuments();
-
-      const [url] = mockFetch.mock.calls[0];
-      expect(url).not.toContain("user_id=");
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe("http://localhost:8000/documents");
+      expect(url).not.toContain("user_id");
+      expect((init?.headers as Record<string, string>)["Authorization"]).toMatch(/^Bearer /);
     });
 
     it("returns parsed documents on success", async () => {
@@ -86,8 +68,7 @@ describe("api", () => {
   });
 
   describe("ask", () => {
-    it("includes user_id in body when no token", async () => {
-      setAuthTokenProvider(() => Promise.resolve(null));
+    it("sends document_id and question only (no user_id)", async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         text: () => Promise.resolve(JSON.stringify({ answer: "Yes", citations: [] })),
@@ -97,32 +78,10 @@ describe("api", () => {
       const { ask } = await import("./api");
       await ask("doc-123", "What is the salary?");
 
-      expect(mockFetch).toHaveBeenCalledWith(
-        expect.stringContaining("/ask"),
-        expect.objectContaining({
-          method: "POST",
-          body: expect.stringContaining("doc-123"),
-        })
-      );
-      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.user_id).toBe("11111111-1111-1111-1111-111111111111");
-      expect(body.document_id).toBe("doc-123");
-      expect(body.question).toBe("What is the salary?");
-    });
-
-    it("omits user_id from body when token present", async () => {
-      setAuthTokenProvider(() => Promise.resolve("clerk-token"));
-      const mockFetch = vi.fn().mockResolvedValue({
-        ok: true,
-        text: () => Promise.resolve(JSON.stringify({ answer: "Yes", citations: [] })),
-      });
-      vi.stubGlobal("fetch", mockFetch);
-
-      const { ask } = await import("./api");
-      await ask("doc-123", "What?");
-
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(body.user_id).toBeUndefined();
+      expect(body.document_id).toBe("doc-123");
+      expect(body.question).toBe("What is the salary?");
     });
   });
 
@@ -170,8 +129,7 @@ describe("api", () => {
   });
 
   describe("presign", () => {
-    it("sends user_id in body when no token", async () => {
-      setAuthTokenProvider(() => Promise.resolve(null));
+    it("sends filename and size without user_id", async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         text: () =>
@@ -190,7 +148,7 @@ describe("api", () => {
       await presign("test.pdf", 1024);
 
       const body = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(body.user_id).toBe("11111111-1111-1111-1111-111111111111");
+      expect(body.user_id).toBeUndefined();
       expect(body.filename).toBe("test.pdf");
       expect(body.file_size_bytes).toBe(1024);
     });
