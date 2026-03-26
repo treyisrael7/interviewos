@@ -5,8 +5,10 @@ import uuid
 
 import pytest
 from httpx import ASGITransport, AsyncClient
+from sqlalchemy import select
 
 from app.core.auth import get_current_user
+from app.db.base import async_session_maker
 from app.main import app
 from app.models import User
 from app.core.rate_limit import clear_store
@@ -31,7 +33,11 @@ async def client():
 
 @pytest.fixture
 def force_auth():
-    """Override auth dependency with a concrete current user for a test."""
+    """Override auth dependency with a concrete current user for a test.
+
+    Inserts the user row when missing so foreign keys (e.g. documents.user_id → users.id) succeed.
+    If the test already created that user, the insert is skipped.
+    """
 
     async def _force(
         *,
@@ -40,6 +46,12 @@ def force_auth():
     ) -> User:
         resolved_id = user_id or uuid.uuid4()
         resolved_email = email or f"{resolved_id}@test.local"
+
+        async with async_session_maker() as db:
+            result = await db.execute(select(User).where(User.id == resolved_id))
+            if result.scalar_one_or_none() is None:
+                db.add(User(id=resolved_id, clerk_id=None, email=resolved_email))
+                await db.commit()
 
         current_user = User(id=resolved_id, email=resolved_email)
 

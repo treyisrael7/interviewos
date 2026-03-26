@@ -123,7 +123,7 @@ async def test_interview_generate_no_evidence_returns_400(client, demo_key_off, 
     async def _mock_generate_empty(*args, **kwargs):
         return []
 
-    monkeypatch.setattr("app.routers.interview.generate_questions", _mock_generate_empty)
+    monkeypatch.setattr("app.routers.interview.runtime.generate_questions", _mock_generate_empty)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
     user_id = uuid.uuid4()
@@ -225,7 +225,7 @@ async def test_interview_generate_success_creates_session(client, demo_key_off, 
 
     monkeypatch.setattr("app.services.retrieval.embed_query", _mock_embed)
     monkeypatch.setattr("app.services.interview.embed_query", _mock_embed)
-    monkeypatch.setattr("app.routers.interview.generate_questions", _mock_generate_questions)
+    monkeypatch.setattr("app.routers.interview.runtime.generate_questions", _mock_generate_questions)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
     user_id = uuid.uuid4()
@@ -354,7 +354,7 @@ async def test_interview_evaluate_success(client, demo_key_off, monkeypatch, for
             ],
         }
 
-    monkeypatch.setattr("app.routers.interview.evaluate_answer_with_retrieval", _mock_evaluate)
+    monkeypatch.setattr("app.routers.interview.runtime.evaluate_answer_with_retrieval", _mock_evaluate)
     monkeypatch.setattr(settings, "openai_api_key", "sk-test")
 
     user_id = uuid.uuid4()
