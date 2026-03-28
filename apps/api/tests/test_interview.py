@@ -1,7 +1,7 @@
 """Tests for POST /interview/generate endpoint."""
 
 import uuid
-from datetime import datetime, timezone
+from datetime import datetime
 
 import pytest
 
@@ -774,8 +774,9 @@ async def test_interview_analytics_overview(client, demo_key_off, force_auth):
     from app.db.base import async_session_maker
     from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
 
-    t_old = datetime(2024, 3, 1, 10, 0, 0, tzinfo=timezone.utc)
-    t_new = datetime(2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
+    # Naive datetimes: interview_answers.created_at is TIMESTAMP WITHOUT TIME ZONE.
+    t_old = datetime(2024, 3, 1, 10, 0, 0)
+    t_new = datetime(2024, 3, 20, 10, 0, 0)
 
     user_id = uuid.uuid4()
     async with async_session_maker() as db:
