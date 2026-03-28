@@ -1,6 +1,7 @@
 """Tests for POST /interview/generate endpoint."""
 
 import uuid
+from datetime import datetime, timezone
 
 import pytest
 
@@ -773,6 +774,9 @@ async def test_interview_analytics_overview(client, demo_key_off, force_auth):
     from app.db.base import async_session_maker
     from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
 
+    t_old = datetime(2024, 3, 1, 10, 0, 0, tzinfo=timezone.utc)
+    t_new = datetime(2024, 3, 20, 10, 0, 0, tzinfo=timezone.utc)
+
     user_id = uuid.uuid4()
     async with async_session_maker() as db:
         user = User(id=user_id, email="overview@t.local")
@@ -821,6 +825,8 @@ async def test_interview_analytics_overview(client, demo_key_off, force_auth):
                 strengths=[],
                 weaknesses=[],
                 feedback_json={"score_breakdown": {}},
+                evaluation_json={},
+                created_at=t_old,
             )
         )
 
@@ -856,6 +862,7 @@ async def test_interview_analytics_overview(client, demo_key_off, force_auth):
                 weaknesses=[],
                 feedback_json={"score_breakdown": {}},
                 evaluation_json={},
+                created_at=t_new,
             )
         )
         await db.commit()

@@ -51,13 +51,20 @@ async def get_interview_analytics_overview(
     scores: list[float] = []
     by_label: dict[str, dict] = defaultdict(lambda: {"scores": [], "competency_id": None})
     session_scores: dict[uuid.UUID, list[float]] = defaultdict(list)
-    session_meta: dict[uuid.UUID, object] = {}
+    # Latest answer timestamp per session (stable ordering vs session.created_at in same transaction).
+    session_latest_at: dict[uuid.UUID, object] = {}
+    session_created_at: dict[uuid.UUID, object] = {}
 
     for ans, q, sess in rows:
         s = float(ans.score)
         scores.append(s)
         session_scores[sess.id].append(s)
-        session_meta[sess.id] = sess.created_at
+        session_created_at[sess.id] = sess.created_at
+        at = ans.created_at or sess.created_at
+        if at is not None:
+            prev = session_latest_at.get(sess.id)
+            if prev is None or at > prev:
+                session_latest_at[sess.id] = at
         trend.append(
             GlobalScoreTrendPoint(
                 at=ans.created_at.isoformat() if ans.created_at else "",
@@ -123,14 +130,18 @@ async def get_interview_analytics_overview(
             )
         )
 
-    def _session_sort_key(sid: uuid.UUID) -> float:
-        ct = session_meta.get(sid)
-        if ct is None:
-            return 0.0
+    def _session_sort_key(sid: uuid.UUID) -> tuple[float, float, str]:
+        lat = session_latest_at.get(sid)
+        c_at = session_created_at.get(sid)
         try:
-            return ct.timestamp()  # type: ignore[union-attr]
-        except (AttributeError, OSError):
-            return 0.0
+            ts_lat = float(lat.timestamp()) if lat is not None else 0.0  # type: ignore[union-attr]
+        except (AttributeError, OSError, TypeError):
+            ts_lat = 0.0
+        try:
+            ts_sess = float(c_at.timestamp()) if c_at is not None else 0.0  # type: ignore[union-attr]
+        except (AttributeError, OSError, TypeError):
+            ts_sess = 0.0
+        return (ts_lat, ts_sess, str(sid))
 
     ordered_with_answers = sorted(
         [sid for sid in session_scores if session_scores[sid]],

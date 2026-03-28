@@ -13,7 +13,8 @@ from app.db.session import get_db
 from app.models import Document, InterviewAnswer, InterviewQuestion, InterviewSession, User
 from app.routers.interview.helpers import from_rubric, question_to_output, to_role_profile_out
 from app.routers.interview.router import router
-from app.routers.interview.runtime import evaluate_answer_with_retrieval, generate_questions
+from app.routers.interview import runtime as interview_runtime
+from app.routers.interview.runtime import evaluate_answer_with_retrieval
 from app.routers.interview.schemas import (
     CitationItem,
     CitedItem,
@@ -120,7 +121,7 @@ async def generate(
     await db.flush()
 
     try:
-        raw_questions = await generate_questions(
+        raw_questions = await interview_runtime.generate_questions(
             db=db,
             document_id=body.document_id,
             num_questions=body.num_questions,
