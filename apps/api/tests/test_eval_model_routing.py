@@ -15,60 +15,50 @@ def _clear_eval_env(monkeypatch):
 
 def test_default_uses_same_model_for_eval_as_chat(monkeypatch):
     monkeypatch.setenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-    from importlib import reload
+    from app.core.config import Settings
 
-    import app.core.config as cfg
-
-    reload(cfg)
-    assert cfg.settings.use_high_quality_eval is False
-    assert cfg.settings.openai_eval_chat_model == "gpt-4o-mini"
+    s = Settings()
+    assert s.use_high_quality_eval is False
+    assert s.openai_eval_chat_model == "gpt-4o-mini"
 
 
 def test_high_quality_eval_switches_model(monkeypatch):
     monkeypatch.setenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
     monkeypatch.setenv("OPENAI_CHAT_MODEL_EVAL_HIGH", "gpt-4o")
     monkeypatch.setenv("USE_HIGH_QUALITY_EVAL", "true")
-    from importlib import reload
+    from app.core.config import Settings
 
-    import app.core.config as cfg
-
-    reload(cfg)
-    assert cfg.settings.use_high_quality_eval is True
-    assert cfg.settings.openai_eval_chat_model == "gpt-4o"
+    s = Settings()
+    assert s.use_high_quality_eval is True
+    assert s.openai_eval_chat_model == "gpt-4o"
 
 
 def test_use_high_quality_eval_env_false(monkeypatch):
     monkeypatch.setenv("USE_HIGH_QUALITY_EVAL", "false")
     monkeypatch.setenv("OPENAI_CHAT_MODEL", "gpt-4o-mini")
-    from importlib import reload
+    from app.core.config import Settings
 
-    import app.core.config as cfg
-
-    reload(cfg)
-    assert cfg.settings.use_high_quality_eval is False
-    assert cfg.settings.openai_eval_chat_model == "gpt-4o-mini"
+    s = Settings()
+    assert s.use_high_quality_eval is False
+    assert s.openai_eval_chat_model == "gpt-4o-mini"
 
 
 def test_fit_analysis_uses_model_fast_by_default(monkeypatch):
     monkeypatch.setenv("MODEL_FAST", "gpt-4o-mini")
     monkeypatch.setenv("MODEL_HIGH_QUALITY", "gpt-4o")
-    from importlib import reload
+    from app.core.config import Settings
 
-    import app.core.config as cfg
-
-    reload(cfg)
-    assert cfg.settings.use_high_quality_fit_analysis is False
-    assert cfg.settings.chat_model_fit_analysis() == "gpt-4o-mini"
+    s = Settings()
+    assert s.use_high_quality_fit_analysis is False
+    assert s.chat_model_fit_analysis() == "gpt-4o-mini"
 
 
 def test_fit_analysis_high_quality_flag(monkeypatch):
     monkeypatch.setenv("MODEL_FAST", "gpt-4o-mini")
     monkeypatch.setenv("MODEL_HIGH_QUALITY", "gpt-4o")
     monkeypatch.setenv("USE_HIGH_QUALITY_FIT_ANALYSIS", "true")
-    from importlib import reload
+    from app.core.config import Settings
 
-    import app.core.config as cfg
-
-    reload(cfg)
-    assert cfg.settings.use_high_quality_fit_analysis is True
-    assert cfg.settings.chat_model_fit_analysis() == "gpt-4o"
+    s = Settings()
+    assert s.use_high_quality_fit_analysis is True
+    assert s.chat_model_fit_analysis() == "gpt-4o"
