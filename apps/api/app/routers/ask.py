@@ -1,4 +1,4 @@
-"""Grounded Q&A: retrieval + LLM with citation markers."""
+"""Grounded Q&A: retrieval + structured recruiter-style JSON reasoning."""
 
 import logging
 import uuid
@@ -29,6 +29,10 @@ ASK_TOP_K = 6
 class AskInput(BaseModel):
     document_id: uuid.UUID
     question: str = Field(..., min_length=1)
+    additional_document_ids: list[str] | None = Field(
+        default=None,
+        description="Optional extra documents (e.g. resume) to search with the primary document.",
+    )
 
 
 class Citation(BaseModel):
@@ -38,7 +42,10 @@ class Citation(BaseModel):
 
 
 class AskOutput(BaseModel):
-    answer: str
+    answer: str = Field(
+        ...,
+        description="JSON string: key_job_requirements, matches, gaps, fit_score, reasoning.",
+    )
     citations: list[Citation]
 
 
@@ -49,9 +56,8 @@ async def ask(
     db: AsyncSession = Depends(get_db),
 ):
     """
-    Grounded Q&A over document chunks.
-    Retrieves relevant excerpts, builds a grounded prompt, calls OpenAI chat completion.
-    Returns answer with citation markers [pN-cM] and a citations list.
+    Fit-oriented Q&A over retrieved chunks (JD vs resume when ``source_type`` is set).
+    Returns ``answer`` as strict JSON text and parallel chunk citations for grounding.
     """
     result = await db.execute(select(Document).where(Document.id == body.document_id))
     doc = result.scalar_one_or_none()
@@ -70,6 +76,47 @@ async def ask(
             status_code=503,
             detail="OpenAI API not configured; set OPENAI_API_KEY",
         )
+
+    additional_uuid_list: list[uuid.UUID] = []
+    raw_additional = body.additional_document_ids or []
+    seen: set[uuid.UUID] = set()
+    for raw_id in raw_additional:
+        try:
+            parsed = uuid.UUID(str(raw_id).strip())
+        except ValueError:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Invalid additional_document_ids entry: {raw_id!r}",
+            ) from None
+        if parsed == body.document_id or parsed in seen:
+            continue
+        seen.add(parsed)
+        additional_uuid_list.append(parsed)
+
+    if additional_uuid_list:
+        result = await db.execute(
+            select(Document).where(Document.id.in_(additional_uuid_list))
+        )
+        found = {row.id: row for row in result.scalars().all()}
+        missing = [str(i) for i in additional_uuid_list if i not in found]
+        if missing:
+            raise HTTPException(
+                status_code=404,
+                detail=f"Document(s) not found: {', '.join(missing)}",
+            )
+        for extra_id in additional_uuid_list:
+            extra_doc = found[extra_id]
+            assert_resource_ownership(extra_doc, current_user)
+            if extra_doc.status != "ready":
+                raise HTTPException(
+                    status_code=400,
+                    detail=(
+                        f"Document {extra_id} must be ready to answer; "
+                        f"current status: {extra_doc.status}"
+                    ),
+                )
+
+    additional_for_retrieval = additional_uuid_list or None
 
     # Retrieve relevant chunks
     try:
@@ -93,6 +140,7 @@ async def ask(
             include_low_signal=False,
             section_types=section_types,
             doc_domain=doc_domain,
+            additional_document_ids=additional_for_retrieval,
         )
         # If section filter (e.g. compensation) returned nothing, retry without filter
         if not chunks and section_types:
@@ -105,6 +153,7 @@ async def ask(
                 include_low_signal=False,
                 section_types=None,
                 doc_domain=doc_domain,
+                additional_document_ids=additional_for_retrieval,
             )
     except Exception as e:
         logger.exception("retrieve_chunks failed")

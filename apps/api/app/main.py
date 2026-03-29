@@ -17,7 +17,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.core.config import settings
 from app.core.middleware import DemoGateMiddleware, RateLimitMiddleware
-from app.routers import ask, documents, interview, retrieve, user_resume
+from app.routers import analyze_fit, ask, documents, fit_history, interview, retrieve, user_resume
 
 app = FastAPI(title="InterviewOS API", version="0.1.0")
 
@@ -71,6 +71,8 @@ async def root():
     return {"message": "InterviewOS API"}
 
 
+app.include_router(analyze_fit.router)
+app.include_router(fit_history.router)
 app.include_router(ask.router)
 app.include_router(documents.router)
 app.include_router(interview.router)

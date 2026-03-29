@@ -75,7 +75,7 @@ Rules:
         text_for_llm = jd_text[:12000] if len(jd_text) > 12000 else jd_text
 
         response = client.chat.completions.create(
-            model=settings.openai_chat_model,
+            model=settings.model_fast,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": f"Analyze this job description:\n\n{text_for_llm}"},

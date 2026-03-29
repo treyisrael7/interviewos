@@ -3,7 +3,7 @@ from pathlib import Path
 from typing import Self
 
 from dotenv import load_dotenv
-from pydantic import model_validator
+from pydantic import AliasChoices, Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # Fixed sandbox identity when demo mode is enabled (isolated from real Clerk users).
@@ -26,6 +26,7 @@ class Settings(BaseSettings):
         env_file=(_ROOT / ".env", _API_ROOT / ".env"),
         env_file_encoding="utf-8",
         extra="ignore",
+        populate_by_name=True,
     )
 
     database_url: str = "postgresql+asyncpg://postgres:postgres@localhost:5432/interview_os"
@@ -55,6 +56,12 @@ class Settings(BaseSettings):
     max_chunks_per_doc: int = 300  # MAX_CHUNKS_PER_DOC
     top_k_max: int = 8  # TOP_K_MAX
     max_completion_tokens: int = 500  # MAX_COMPLETION_TOKENS
+    # Estimated-token cap for one LLM call (system + user/context + completion reserve).
+    # Env aliases: MAX_LLM_BUDGET_TOKENS, MAX_TOKENS.
+    max_llm_budget_tokens: int = Field(
+        default=4000,
+        validation_alias=AliasChoices("max_llm_budget_tokens", "MAX_LLM_BUDGET_TOKENS", "MAX_TOKENS"),
+    )
 
     # Chunking (job description uses jd_chunking; these retained for potential generic docs)
     chunk_size: int = 512  # CHUNK_SIZE (legacy)
@@ -68,12 +75,25 @@ class Settings(BaseSettings):
     openai_embedding_model: str = "text-embedding-3-small"  # OPENAI_EMBEDDING_MODEL
     openai_embedding_dim: int = 1536  # OPENAI_EMBEDDING_DIM (must match DB vector column)
 
-    # OpenAI chat: default / cheaper model (question gen, rubric extraction, Q&A, etc.)
-    openai_chat_model: str = "gpt-4o-mini"  # OPENAI_CHAT_MODEL
+    # Chat models: fast default for most requests; high tier for optional complex paths.
+    model_fast: str = Field(
+        default="gpt-4o-mini",
+        validation_alias=AliasChoices("model_fast", "MODEL_FAST", "OPENAI_CHAT_MODEL"),
+    )
+    model_high_quality: str = Field(
+        default="gpt-4o",
+        validation_alias=AliasChoices(
+            "model_high_quality",
+            "MODEL_HIGH_QUALITY",
+            "OPENAI_CHAT_MODEL_EVAL_HIGH",
+        ),
+    )
 
-    # Final answer evaluation: use higher-quality model only when enabled
+    # Final answer evaluation: use ``model_high_quality`` only when enabled
     use_high_quality_eval: bool = False  # USE_HIGH_QUALITY_EVAL
-    openai_chat_model_eval_high: str = "gpt-4o"  # OPENAI_CHAT_MODEL_EVAL_HIGH
+
+    # Structured fit analysis (/analyze-fit): use ``model_high_quality`` for complex reasoning
+    use_high_quality_fit_analysis: bool = False  # USE_HIGH_QUALITY_FIT_ANALYSIS
 
     # LLM cache (Redis optional; falls back to in-process memory)
     redis_url: str | None = None  # REDIS_URL e.g. redis://localhost:6379/0
@@ -96,8 +116,14 @@ class Settings(BaseSettings):
     def openai_eval_chat_model(self) -> str:
         """Chat model for final interview evaluation (see USE_HIGH_QUALITY_EVAL)."""
         if self.use_high_quality_eval:
-            return self.openai_chat_model_eval_high
-        return self.openai_chat_model
+            return self.model_high_quality
+        return self.model_fast
+
+    def chat_model_fit_analysis(self) -> str:
+        """Standard fit analysis uses ``model_fast``; enable ``use_high_quality_fit_analysis`` for complex reasoning."""
+        if self.use_high_quality_fit_analysis:
+            return self.model_high_quality
+        return self.model_fast
 
     @model_validator(mode="after")
     def _validate_demo_config(self) -> Self:

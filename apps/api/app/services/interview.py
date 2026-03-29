@@ -485,10 +485,10 @@ Output JSON only."""
     try:
         from openai import OpenAI
 
-        # Single-question generation: OPENAI_CHAT_MODEL only (cheap path).
+        # Single-question generation: MODEL_FAST only (cheap path).
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.chat.completions.create(
-            model=settings.openai_chat_model,
+            model=settings.model_fast,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
@@ -793,10 +793,10 @@ def generate_interview_questions(
     rp = role_profile or DEFAULT_ROLE_PROFILE.copy()
     system_prompt, user_content = _build_domain_aware_prompt(rp, retrieved_evidence_chunks, num_questions)
 
-    # Batch question generation uses OPENAI_CHAT_MODEL only (not OPENAI_CHAT_MODEL_EVAL_HIGH).
+    # Batch question generation uses MODEL_FAST only (not MODEL_HIGH_QUALITY).
     client = OpenAI(api_key=settings.openai_api_key)
     response = client.chat.completions.create(
-        model=settings.openai_chat_model,
+        model=settings.model_fast,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_content},
@@ -1783,8 +1783,8 @@ def evaluate_answer(
     Parsed output is passed through :func:`validate_evaluation_output` (citation IDs,
     non-empty strengths/gaps). One retry is attempted if all model citations were invalid.
 
-    Model: :attr:`settings.openai_eval_chat_model` (default same as ``OPENAI_CHAT_MODEL``;
-    when ``USE_HIGH_QUALITY_EVAL`` is true, uses ``OPENAI_CHAT_MODEL_EVAL_HIGH``).
+    Model: :attr:`settings.openai_eval_chat_model` (default ``MODEL_FAST``;
+    when ``USE_HIGH_QUALITY_EVAL`` is true, uses ``MODEL_HIGH_QUALITY``).
     """
     if not settings.openai_api_key:
         raise ValueError("OPENAI_API_KEY is not configured")

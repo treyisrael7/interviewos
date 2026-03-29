@@ -5,7 +5,7 @@ import re
 import uuid
 from typing import Literal
 
-from sqlalchemy import func, select
+from sqlalchemy import and_, func, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 from app.core.config import settings
 from app.models import DocumentChunk, InterviewSource
@@ -22,6 +22,11 @@ from app.services.ingestion import _create_embeddings
 logger = logging.getLogger(__name__)
 
 RetrievalMode = Literal["hybrid", "semantic", "keyword"]
+
+# Token / cost guard for production retrieval: cap chunks sent to LLMs (see retrieve_chunks).
+MAX_RETRIEVAL_CHUNKS = 8
+
+_Scope = Literal["union", "primary", "additional"]
 
 # Query keywords -> suggested section types (canonical: responsibilities, qualifications, tools, compensation, about, other)
 QUERY_SECTION_HINTS: dict[str, list[str]] = {
@@ -125,6 +130,24 @@ def _normalize_keyword_query_text(query_text: str) -> str:
     return normalized
 
 
+def _chunk_document_role(
+    chunk: dict,
+    *,
+    primary_document_id: uuid.UUID,
+    additional_document_ids: list[uuid.UUID] | None,
+) -> tuple[str, str]:
+    """Map chunk to (document_id str, logical source_type: JD | RESUME | OTHER)."""
+    raw = chunk.get("document_id")
+    if raw is None:
+        return str(primary_document_id), "JD"
+    doc_uuid = uuid.UUID(str(raw))
+    if doc_uuid == primary_document_id:
+        return str(doc_uuid), "JD"
+    if doc_uuid in set(additional_document_ids or []):
+        return str(doc_uuid), "RESUME"
+    return str(doc_uuid), "OTHER"
+
+
 def _chunk_payload_from_row(row) -> dict:
     """Normalize a SQL row into the shared retrieval payload used across retrieval paths."""
     source_type_val = getattr(row, "src_type", None) or "jd"
@@ -142,6 +165,9 @@ def _chunk_payload_from_row(row) -> dict:
         "sourceType": source_type_val,
         "sourceTitle": source_title_val,
     }
+    doc_id = getattr(row, "document_id", None)
+    if doc_id is not None:
+        payload["document_id"] = str(doc_id)
     embedding = getattr(row, "embedding", None)
     if embedding is not None:
         payload["embedding"] = embedding
@@ -169,29 +195,44 @@ def _with_retrieval_source_defaults(candidates: list[dict], retrieval_source: st
     return result
 
 
-def _finalize_chunks(candidates: list[dict]) -> list[dict]:
+def _finalize_chunks(
+    candidates: list[dict],
+    *,
+    primary_document_id: uuid.UUID,
+    additional_document_ids: list[uuid.UUID] | None = None,
+) -> list[dict]:
     """Return caller-facing chunk dicts while preserving internal debugging metadata."""
-    return [
-        {
-            "chunk_id": c["chunk_id"],
-            "chunkId": c["chunkId"],
-            "page_number": c["page_number"],
-            "page": c["page"],
-            "snippet": c["snippet"],
-            "text": c["text"],
-            "score": c["score"],
-            "sourceType": c["sourceType"],
-            "sourceTitle": c["sourceTitle"],
-            "is_low_signal": c.get("is_low_signal", False),
-            "section_type": c.get("section_type"),
-            "retrieval_source": c.get("retrieval_source", "semantic"),
-            "retrievalSource": c.get("retrievalSource", c.get("retrieval_source", "semantic")),
-            "semantic_score": c.get("semantic_score", c["score"] if c.get("retrieval_source", "semantic") == "semantic" else None),
-            "keyword_score": c.get("keyword_score"),
-            "final_score": c.get("final_score", c["score"]),
-        }
-        for c in candidates
-    ]
+    out: list[dict] = []
+    for c in candidates:
+        doc_id_str, logical_source = _chunk_document_role(
+            c,
+            primary_document_id=primary_document_id,
+            additional_document_ids=additional_document_ids,
+        )
+        out.append(
+            {
+                "chunk_id": c["chunk_id"],
+                "chunkId": c["chunkId"],
+                "document_id": doc_id_str,
+                "documentId": doc_id_str,
+                "page_number": c["page_number"],
+                "page": c["page"],
+                "snippet": c["snippet"],
+                "text": c["text"],
+                "score": c["score"],
+                "sourceType": c["sourceType"],
+                "sourceTitle": c["sourceTitle"],
+                "source_type": logical_source,
+                "is_low_signal": c.get("is_low_signal", False),
+                "section_type": c.get("section_type"),
+                "retrieval_source": c.get("retrieval_source", "semantic"),
+                "retrievalSource": c.get("retrievalSource", c.get("retrieval_source", "semantic")),
+                "semantic_score": c.get("semantic_score", c["score"] if c.get("retrieval_source", "semantic") == "semantic" else None),
+                "keyword_score": c.get("keyword_score"),
+                "final_score": c.get("final_score", c["score"]),
+            }
+        )
+    return out
 
 
 def _normalize_scores(candidates: list[dict], score_key: str) -> None:
@@ -272,6 +313,8 @@ def _merge_retrieval_candidates(
         if not existing.get("content_hash") and content_hash:
             existing["content_hash"] = content_hash
             hash_to_chunk_id[content_hash] = existing_key
+        if not existing.get("document_id") and candidate.get("document_id"):
+            existing["document_id"] = candidate["document_id"]
 
         existing_source = existing.get("retrieval_source")
         candidate_source = candidate.get("retrieval_source")
@@ -292,6 +335,76 @@ def _merge_retrieval_candidates(
 
     merged_candidates.sort(key=lambda c: c["score"], reverse=True)
     return merged_candidates
+
+
+def _allocate_jd_resume_slots(
+    primary_chunks: list[dict],
+    additional_chunks: list[dict],
+    *,
+    max_total: int,
+    slot_primary: int,
+    slot_additional: int,
+) -> list[dict]:
+    """
+    Cost optimization: keep a fixed token budget by taking top similarity chunks per
+    corpus (JD vs resume), then reassign empty slots to whichever side still has
+    higher-ranked hits.
+
+    Chunks are assumed pre-sorted by SQL (best similarity first); we re-sort by
+    ``score`` descending defensively, then merge.
+    """
+    if max_total <= 0:
+        return []
+
+    primary_ranked = sorted(primary_chunks, key=lambda c: float(c.get("score") or 0.0), reverse=True)
+    additional_ranked = sorted(
+        additional_chunks, key=lambda c: float(c.get("score") or 0.0), reverse=True
+    )
+
+    take_p = min(slot_primary, len(primary_ranked))
+    take_a = min(slot_additional, len(additional_ranked))
+    chosen_p = primary_ranked[:take_p]
+    chosen_a = additional_ranked[:take_a]
+    spare = max_total - len(chosen_p) - len(chosen_a)
+
+    rest_p = primary_ranked[take_p:]
+    rest_a = additional_ranked[take_a:]
+    spill: list[dict] = []
+    i, j = 0, 0
+    while len(spill) < spare and (i < len(rest_p) or j < len(rest_a)):
+        sp = float(rest_p[i]["score"]) if i < len(rest_p) else -1.0
+        sa = float(rest_a[j]["score"]) if j < len(rest_a) else -1.0
+        if sp >= sa and i < len(rest_p):
+            spill.append(rest_p[i])
+            i += 1
+        elif j < len(rest_a):
+            spill.append(rest_a[j])
+            j += 1
+        else:
+            spill.append(rest_p[i])
+            i += 1
+
+    merged = chosen_p + chosen_a + spill
+    merged.sort(key=lambda c: float(c.get("score") or 0.0), reverse=True)
+    return merged[:max_total]
+
+
+def _split_slot_targets(
+    max_total: int,
+    *,
+    has_additional: bool,
+) -> tuple[int, int]:
+    """
+    Even JD / resume slot targets (e.g. 8 total -> 4+4); odd totals give the spare to primary.
+
+    Cost optimization: avoids stuffing context from one document when the other still has
+    strong matches after the initial per-side picks (see ``_allocate_jd_resume_slots``).
+    """
+    if not has_additional or max_total <= 0:
+        return max_total, 0
+    half = max_total // 2
+    rem = max_total - 2 * half
+    return half + rem, half
 
 
 def _log_retrieval_summary(
@@ -321,6 +434,8 @@ def _finalize_single_source_candidates(
     query_embedding: list[float] | None,
     top_k: int,
     retrieval_source: str,
+    primary_document_id: uuid.UUID,
+    additional_document_ids: list[uuid.UUID] | None = None,
 ) -> list[dict]:
     """Apply shared post-processing for semantic-only or keyword-only candidate lists."""
     ranked = candidates
@@ -330,7 +445,11 @@ def _finalize_single_source_candidates(
         ranked = candidates[:top_k]
         for c in ranked:
             c.pop("embedding", None)
-    return _finalize_chunks(_with_retrieval_source_defaults(ranked, retrieval_source))
+    return _finalize_chunks(
+        _with_retrieval_source_defaults(ranked, retrieval_source),
+        primary_document_id=primary_document_id,
+        additional_document_ids=additional_document_ids,
+    )
 
 
 def _mmr_select(
@@ -387,17 +506,39 @@ async def _retrieve_semantic_candidates(
     doc_domain: str | None = None,
     source_types: list[str] | None = None,
     additional_document_ids: list[uuid.UUID] | None = None,
+    *,
+    _scope: _Scope = "union",
+    _sql_limit_override: int | None = None,
 ) -> list[dict]:
-    """Fetch semantic candidates before final ranking/diversification."""
+    """
+    Fetch semantic candidates before final ranking / MMR.
+
+    ``_scope``:
+    - ``union``: legacy single query over primary + additional (same filters as before).
+    - ``primary``: only ``document_id`` rows — JD filters apply to the whole result.
+    - ``additional``: only ``additional_document_ids`` — resume rows skip JD section/domain
+      filters (same idea as the OR branch for extras in union mode).
+
+    ``_sql_limit_override``: when set, caps DB rows (token budget); otherwise
+    ``max(top_k, top_n_candidates)`` for union, or ``top_k`` for scoped fetches.
+    """
     distance_col = DocumentChunk.embedding.cosine_distance(query_embedding)
     score_col = (1 - distance_col).label("score")
-    limit = max(top_k, settings.top_n_candidates)
+    extra_doc_ids = additional_document_ids or []
+
+    if _scope == "union":
+        limit = _sql_limit_override if _sql_limit_override is not None else max(
+            top_k, settings.top_n_candidates
+        )
+    else:
+        limit = _sql_limit_override if _sql_limit_override is not None else top_k
 
     expanded_section_types = _expanded_section_types(section_types)
 
     stmt = (
         select(
             DocumentChunk.id,
+            DocumentChunk.document_id,
             DocumentChunk.page_number,
             DocumentChunk.content,
             DocumentChunk.embedding,
@@ -409,19 +550,54 @@ async def _retrieve_semantic_candidates(
             score_col,
         )
         .join(InterviewSource, DocumentChunk.source_id == InterviewSource.id)
-        .where(
-            DocumentChunk.document_id.in_([document_id] + (additional_document_ids or []))
-        )
         .where(DocumentChunk.embedding.isnot(None))
         .order_by(distance_col.asc())
         .limit(limit)
     )
+
+    if _scope == "primary":
+        stmt = stmt.where(DocumentChunk.document_id == document_id)
+        if expanded_section_types:
+            stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
+        if doc_domain:
+            stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
+    elif _scope == "additional":
+        if not extra_doc_ids:
+            return []
+        stmt = stmt.where(DocumentChunk.document_id.in_(extra_doc_ids))
+    else:
+        stmt = stmt.where(
+            DocumentChunk.document_id.in_([document_id] + extra_doc_ids)
+        )
+        if expanded_section_types:
+            if extra_doc_ids:
+                stmt = stmt.where(
+                    or_(
+                        and_(
+                            DocumentChunk.document_id == document_id,
+                            DocumentChunk.section_type.in_(expanded_section_types),
+                        ),
+                        DocumentChunk.document_id.in_(extra_doc_ids),
+                    )
+                )
+            else:
+                stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
+        if doc_domain:
+            if extra_doc_ids:
+                stmt = stmt.where(
+                    or_(
+                        and_(
+                            DocumentChunk.document_id == document_id,
+                            DocumentChunk.doc_domain == doc_domain,
+                        ),
+                        DocumentChunk.document_id.in_(extra_doc_ids),
+                    )
+                )
+            else:
+                stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
+
     if not include_low_signal:
         stmt = stmt.where(DocumentChunk.is_low_signal.is_(False))
-    if expanded_section_types:
-        stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
-    if doc_domain:
-        stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
     if source_types:
         stmt = stmt.where(InterviewSource.source_type.in_(source_types))
 
@@ -445,6 +621,9 @@ async def retrieve_chunks_keyword(
     doc_domain: str | None = None,
     source_types: list[str] | None = None,
     additional_document_ids: list[uuid.UUID] | None = None,
+    *,
+    _scope: _Scope = "union",
+    _sql_limit_override: int | None = None,
 ) -> list[dict]:
     """
     Search document_chunks by PostgreSQL full-text search ranking.
@@ -462,6 +641,9 @@ async def retrieve_chunks_keyword(
         return []
 
     expanded_section_types = _expanded_section_types(section_types)
+    extra_doc_ids = additional_document_ids or []
+
+    limit = _sql_limit_override if _sql_limit_override is not None else top_k
 
     # websearch_to_tsquery is more forgiving for natural user input than
     # plainto_tsquery, and the preprocessor above keeps JD/technical tokens
@@ -472,6 +654,7 @@ async def retrieve_chunks_keyword(
     stmt = (
         select(
             DocumentChunk.id,
+            DocumentChunk.document_id,
             DocumentChunk.page_number,
             DocumentChunk.content,
             DocumentChunk.embedding,
@@ -483,19 +666,54 @@ async def retrieve_chunks_keyword(
             rank_col,
         )
         .join(InterviewSource, DocumentChunk.source_id == InterviewSource.id)
-        .where(
-            DocumentChunk.document_id.in_([document_id] + (additional_document_ids or []))
-        )
         .where(DocumentChunk.search_vector.op("@@")(tsquery))
         .order_by(rank_col.desc(), DocumentChunk.page_number.asc(), DocumentChunk.chunk_index.asc())
-        .limit(top_k)
+        .limit(limit)
     )
+
+    if _scope == "primary":
+        stmt = stmt.where(DocumentChunk.document_id == document_id)
+        if expanded_section_types:
+            stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
+        if doc_domain:
+            stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
+    elif _scope == "additional":
+        if not extra_doc_ids:
+            return []
+        stmt = stmt.where(DocumentChunk.document_id.in_(extra_doc_ids))
+    else:
+        stmt = stmt.where(
+            DocumentChunk.document_id.in_([document_id] + extra_doc_ids)
+        )
+        if expanded_section_types:
+            if extra_doc_ids:
+                stmt = stmt.where(
+                    or_(
+                        and_(
+                            DocumentChunk.document_id == document_id,
+                            DocumentChunk.section_type.in_(expanded_section_types),
+                        ),
+                        DocumentChunk.document_id.in_(extra_doc_ids),
+                    )
+                )
+            else:
+                stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
+        if doc_domain:
+            if extra_doc_ids:
+                stmt = stmt.where(
+                    or_(
+                        and_(
+                            DocumentChunk.document_id == document_id,
+                            DocumentChunk.doc_domain == doc_domain,
+                        ),
+                        DocumentChunk.document_id.in_(extra_doc_ids),
+                    )
+                )
+            else:
+                stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
+
     if not include_low_signal:
         stmt = stmt.where(DocumentChunk.is_low_signal.is_(False))
-    if expanded_section_types:
-        stmt = stmt.where(DocumentChunk.section_type.in_(expanded_section_types))
-    if doc_domain:
-        stmt = stmt.where(DocumentChunk.doc_domain == doc_domain)
     if source_types:
         stmt = stmt.where(InterviewSource.source_type.in_(source_types))
 
@@ -516,6 +734,8 @@ async def retrieve_chunks_for_mode(
     source_types: list[str] | None = None,
     additional_document_ids: list[uuid.UUID] | None = None,
     query_text: str | None = None,
+    *,
+    enforce_production_chunk_budget: bool = False,
 ) -> list[dict]:
     """
     Shared retrieval entry point used by eval tooling and production callers.
@@ -524,6 +744,10 @@ async def retrieve_chunks_for_mode(
     - `semantic`: vector retrieval + MMR
     - `keyword`: PostgreSQL full-text retrieval (+ MMR when a query embedding is provided)
     - `hybrid`: semantic retrieval plus keyword augmentation and merge
+
+    When ``enforce_production_chunk_budget`` is True (production ``retrieve_chunks`` only),
+    total returned chunks never exceeds ``MAX_RETRIEVAL_CHUNKS``; with resume documents,
+    retrieval targets an even JD/resume split and reallocates empty slots to the richer side.
     """
     normalized_query_text = (query_text or "").strip()
 
@@ -533,12 +757,74 @@ async def retrieve_chunks_for_mode(
     if mode in ("hybrid", "semantic") and query_embedding is None:
         raise ValueError(f"query_embedding is required for retrieval mode '{mode}'")
 
+    # Hard cap when the production path asks for it; eval callers pass enforce_production_chunk_budget=False.
+    budget = min(top_k, MAX_RETRIEVAL_CHUNKS) if enforce_production_chunk_budget else top_k
+    extra = additional_document_ids or []
+    use_jd_resume_split = bool(enforce_production_chunk_budget and extra)
+    # Wider SQL limits keep enough high-similarity candidates for MMR before the hard token cap.
+    pool_limit = max(budget, settings.top_n_candidates) if enforce_production_chunk_budget else None
+
     if mode == "semantic":
+        if use_jd_resume_split:
+            sem_p = await _retrieve_semantic_candidates(
+                db=db,
+                document_id=document_id,
+                query_embedding=query_embedding,
+                top_k=budget,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="primary",
+                _sql_limit_override=pool_limit,
+            )
+            sem_a = await _retrieve_semantic_candidates(
+                db=db,
+                document_id=document_id,
+                query_embedding=query_embedding,
+                top_k=budget,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="additional",
+                _sql_limit_override=pool_limit,
+            )
+            slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+            allocated = _allocate_jd_resume_slots(
+                sem_p,
+                sem_a,
+                max_total=budget,
+                slot_primary=slot_p,
+                slot_additional=slot_a,
+            )
+            final_candidates = _with_retrieval_source_defaults(
+                _mmr_select(allocated, query_embedding, budget, settings.mmr_lambda)
+                if allocated
+                else [],
+                "semantic",
+            )
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=len(sem_p) + len(sem_a),
+                keyword_hits=0,
+                deduped_hits=len(allocated),
+                final_hits=len(final_candidates),
+                hybrid_enabled=False,
+            )
+            return _finalize_chunks(
+                final_candidates,
+                primary_document_id=document_id,
+                additional_document_ids=additional_document_ids,
+            )
+
         semantic_candidates = await _retrieve_semantic_candidates(
             db=db,
             document_id=document_id,
             query_embedding=query_embedding,
-            top_k=top_k,
+            top_k=budget,
             include_low_signal=include_low_signal,
             section_types=section_types,
             doc_domain=doc_domain,
@@ -546,8 +832,9 @@ async def retrieve_chunks_for_mode(
             additional_document_ids=additional_document_ids,
         )
         final_candidates = _with_retrieval_source_defaults(
-            _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
-            if semantic_candidates else [],
+            _mmr_select(semantic_candidates, query_embedding, budget, settings.mmr_lambda)
+            if semantic_candidates
+            else [],
             "semantic",
         )
         _log_retrieval_summary(
@@ -558,7 +845,11 @@ async def retrieve_chunks_for_mode(
             final_hits=len(final_candidates),
             hybrid_enabled=False,
         )
-        return _finalize_chunks(final_candidates)
+        return _finalize_chunks(
+            final_candidates,
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
+        )
 
     if mode == "keyword":
         if not normalized_query_text:
@@ -571,11 +862,69 @@ async def retrieve_chunks_for_mode(
                 hybrid_enabled=False,
             )
             return []
+        kw_limit = (
+            pool_limit
+            if pool_limit is not None
+            else max(budget, settings.top_n_candidates)
+        )
+        if use_jd_resume_split:
+            kw_p = await retrieve_chunks_keyword(
+                db=db,
+                document_id=document_id,
+                query_text=normalized_query_text,
+                top_k=kw_limit,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="primary",
+                _sql_limit_override=kw_limit,
+            )
+            kw_a = await retrieve_chunks_keyword(
+                db=db,
+                document_id=document_id,
+                query_text=normalized_query_text,
+                top_k=kw_limit,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="additional",
+                _sql_limit_override=kw_limit,
+            )
+            slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+            allocated = _allocate_jd_resume_slots(
+                kw_p,
+                kw_a,
+                max_total=budget,
+                slot_primary=slot_p,
+                slot_additional=slot_a,
+            )
+            final_candidates = _finalize_single_source_candidates(
+                allocated,
+                query_embedding=query_embedding,
+                top_k=budget,
+                retrieval_source="keyword",
+                primary_document_id=document_id,
+                additional_document_ids=additional_document_ids,
+            )
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=0,
+                keyword_hits=len(kw_p) + len(kw_a),
+                deduped_hits=len(allocated),
+                final_hits=len(final_candidates),
+                hybrid_enabled=False,
+            )
+            return final_candidates
+
         keyword_candidates = await retrieve_chunks_keyword(
             db=db,
             document_id=document_id,
             query_text=normalized_query_text,
-            top_k=max(top_k, settings.top_n_candidates),
+            top_k=kw_limit,
             include_low_signal=include_low_signal,
             section_types=section_types,
             doc_domain=doc_domain,
@@ -585,8 +934,10 @@ async def retrieve_chunks_for_mode(
         final_candidates = _finalize_single_source_candidates(
             keyword_candidates,
             query_embedding=query_embedding,
-            top_k=top_k,
+            top_k=budget,
             retrieval_source="keyword",
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
         )
         _log_retrieval_summary(
             document_id=document_id,
@@ -598,11 +949,187 @@ async def retrieve_chunks_for_mode(
         )
         return final_candidates
 
+    # --- hybrid ---
+    if use_jd_resume_split:
+        sem_p = await _retrieve_semantic_candidates(
+            db=db,
+            document_id=document_id,
+            query_embedding=query_embedding,
+            top_k=budget,
+            include_low_signal=include_low_signal,
+            section_types=section_types,
+            doc_domain=doc_domain,
+            source_types=source_types,
+            additional_document_ids=additional_document_ids,
+            _scope="primary",
+            _sql_limit_override=pool_limit,
+        )
+        sem_a = await _retrieve_semantic_candidates(
+            db=db,
+            document_id=document_id,
+            query_embedding=query_embedding,
+            top_k=budget,
+            include_low_signal=include_low_signal,
+            section_types=section_types,
+            doc_domain=doc_domain,
+            source_types=source_types,
+            additional_document_ids=additional_document_ids,
+            _scope="additional",
+            _sql_limit_override=pool_limit,
+        )
+        semantic_hits = len(sem_p) + len(sem_a)
+
+        if not normalized_query_text:
+            slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+            allocated = _allocate_jd_resume_slots(
+                sem_p,
+                sem_a,
+                max_total=budget,
+                slot_primary=slot_p,
+                slot_additional=slot_a,
+            )
+            final_candidates = _with_retrieval_source_defaults(
+                _mmr_select(allocated, query_embedding, budget, settings.mmr_lambda)
+                if allocated
+                else [],
+                "semantic",
+            )
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=semantic_hits,
+                keyword_hits=0,
+                deduped_hits=len(allocated),
+                final_hits=len(final_candidates),
+                hybrid_enabled=True,
+            )
+            return _finalize_chunks(
+                final_candidates,
+                primary_document_id=document_id,
+                additional_document_ids=additional_document_ids,
+            )
+
+        kw_limit_h = pool_limit if pool_limit is not None else max(budget, settings.top_n_candidates)
+        try:
+            kw_p = await retrieve_chunks_keyword(
+                db=db,
+                document_id=document_id,
+                query_text=normalized_query_text,
+                top_k=kw_limit_h,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="primary",
+                _sql_limit_override=kw_limit_h,
+            )
+            kw_a = await retrieve_chunks_keyword(
+                db=db,
+                document_id=document_id,
+                query_text=normalized_query_text,
+                top_k=kw_limit_h,
+                include_low_signal=include_low_signal,
+                section_types=section_types,
+                doc_domain=doc_domain,
+                source_types=source_types,
+                additional_document_ids=additional_document_ids,
+                _scope="additional",
+                _sql_limit_override=kw_limit_h,
+            )
+        except Exception as exc:
+            logger.warning("Keyword retrieval failed; falling back to semantic-only: %s", exc)
+            slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+            allocated = _allocate_jd_resume_slots(
+                sem_p,
+                sem_a,
+                max_total=budget,
+                slot_primary=slot_p,
+                slot_additional=slot_a,
+            )
+            final_candidates = _with_retrieval_source_defaults(
+                _mmr_select(allocated, query_embedding, budget, settings.mmr_lambda)
+                if allocated
+                else [],
+                "semantic",
+            )
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=semantic_hits,
+                keyword_hits=0,
+                deduped_hits=len(allocated),
+                final_hits=len(final_candidates),
+                hybrid_enabled=True,
+            )
+            return _finalize_chunks(
+                final_candidates,
+                primary_document_id=document_id,
+                additional_document_ids=additional_document_ids,
+            )
+
+        if not kw_p and not kw_a:
+            slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+            allocated = _allocate_jd_resume_slots(
+                sem_p,
+                sem_a,
+                max_total=budget,
+                slot_primary=slot_p,
+                slot_additional=slot_a,
+            )
+            final_candidates = _with_retrieval_source_defaults(
+                _mmr_select(allocated, query_embedding, budget, settings.mmr_lambda)
+                if allocated
+                else [],
+                "semantic",
+            )
+            _log_retrieval_summary(
+                document_id=document_id,
+                semantic_hits=semantic_hits,
+                keyword_hits=0,
+                deduped_hits=len(allocated),
+                final_hits=len(final_candidates),
+                hybrid_enabled=True,
+            )
+            return _finalize_chunks(
+                final_candidates,
+                primary_document_id=document_id,
+                additional_document_ids=additional_document_ids,
+            )
+
+        merged_p = _merge_retrieval_candidates(sem_p, kw_p)
+        merged_a = _merge_retrieval_candidates(sem_a, kw_a)
+        slot_p, slot_a = _split_slot_targets(budget, has_additional=True)
+        allocated = _allocate_jd_resume_slots(
+            merged_p,
+            merged_a,
+            max_total=budget,
+            slot_primary=slot_p,
+            slot_additional=slot_a,
+        )
+        diversified = _mmr_select(
+            allocated,
+            query_embedding,
+            budget,
+            settings.mmr_lambda,
+        )
+        _log_retrieval_summary(
+            document_id=document_id,
+            semantic_hits=semantic_hits,
+            keyword_hits=len(kw_p) + len(kw_a),
+            deduped_hits=len(allocated),
+            final_hits=len(diversified),
+            hybrid_enabled=True,
+        )
+        return _finalize_chunks(
+            diversified,
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
+        )
+
     semantic_candidates = await _retrieve_semantic_candidates(
         db=db,
         document_id=document_id,
         query_embedding=query_embedding,
-        top_k=top_k,
+        top_k=budget,
         include_low_signal=include_low_signal,
         section_types=section_types,
         doc_domain=doc_domain,
@@ -612,8 +1139,9 @@ async def retrieve_chunks_for_mode(
 
     if not normalized_query_text:
         final_candidates = _with_retrieval_source_defaults(
-            _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
-            if semantic_candidates else [],
+            _mmr_select(semantic_candidates, query_embedding, budget, settings.mmr_lambda)
+            if semantic_candidates
+            else [],
             "semantic",
         )
         _log_retrieval_summary(
@@ -624,14 +1152,19 @@ async def retrieve_chunks_for_mode(
             final_hits=len(final_candidates),
             hybrid_enabled=True,
         )
-        return _finalize_chunks(final_candidates)
+        return _finalize_chunks(
+            final_candidates,
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
+        )
 
+    kw_limit_u = max(budget, settings.top_n_candidates)
     try:
         keyword_candidates = await retrieve_chunks_keyword(
             db=db,
             document_id=document_id,
             query_text=normalized_query_text,
-            top_k=max(top_k, settings.top_n_candidates),
+            top_k=kw_limit_u,
             include_low_signal=include_low_signal,
             section_types=section_types,
             doc_domain=doc_domain,
@@ -641,8 +1174,9 @@ async def retrieve_chunks_for_mode(
     except Exception as exc:
         logger.warning("Keyword retrieval failed; falling back to semantic-only: %s", exc)
         final_candidates = _with_retrieval_source_defaults(
-            _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
-            if semantic_candidates else [],
+            _mmr_select(semantic_candidates, query_embedding, budget, settings.mmr_lambda)
+            if semantic_candidates
+            else [],
             "semantic",
         )
         _log_retrieval_summary(
@@ -653,12 +1187,17 @@ async def retrieve_chunks_for_mode(
             final_hits=len(final_candidates),
             hybrid_enabled=True,
         )
-        return _finalize_chunks(final_candidates)
+        return _finalize_chunks(
+            final_candidates,
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
+        )
 
     if not keyword_candidates:
         final_candidates = _with_retrieval_source_defaults(
-            _mmr_select(semantic_candidates, query_embedding, top_k, settings.mmr_lambda)
-            if semantic_candidates else [],
+            _mmr_select(semantic_candidates, query_embedding, budget, settings.mmr_lambda)
+            if semantic_candidates
+            else [],
             "semantic",
         )
         _log_retrieval_summary(
@@ -669,13 +1208,17 @@ async def retrieve_chunks_for_mode(
             final_hits=len(final_candidates),
             hybrid_enabled=True,
         )
-        return _finalize_chunks(final_candidates)
+        return _finalize_chunks(
+            final_candidates,
+            primary_document_id=document_id,
+            additional_document_ids=additional_document_ids,
+        )
 
     hybrid_candidates = _merge_retrieval_candidates(semantic_candidates, keyword_candidates)
     diversified = _mmr_select(
         hybrid_candidates,
         query_embedding,
-        top_k,
+        budget,
         settings.mmr_lambda,
     )
     _log_retrieval_summary(
@@ -686,7 +1229,11 @@ async def retrieve_chunks_for_mode(
         final_hits=len(diversified),
         hybrid_enabled=True,
     )
-    return _finalize_chunks(diversified)
+    return _finalize_chunks(
+        diversified,
+        primary_document_id=document_id,
+        additional_document_ids=additional_document_ids,
+    )
 
 
 async def retrieve_chunks(
@@ -704,15 +1251,24 @@ async def retrieve_chunks(
     """
     Shared production retrieval entry point used by ask/retrieve/interview flows.
 
-    The retrieval mode remains controlled by app settings so existing routes keep
-    their current behavior. Eval tooling can call `retrieve_chunks_for_mode()`
-    directly to compare semantic, keyword, and hybrid strategies.
+    Caps ``top_k`` at ``MAX_RETRIEVAL_CHUNKS`` (token / cost optimization). With
+    ``additional_document_ids``, JD and resume are retrieved in a balanced split
+    inside ``retrieve_chunks_for_mode(..., enforce_production_chunk_budget=True)``.
+
+    Eval tooling should call ``retrieve_chunks_for_mode()`` without the budget flag
+    when comparing retrieval modes at large ``top_k``.
+
+    Returned chunks include ``document_id`` and ``documentId`` (UUID string),
+    ``source_type`` in ``{"JD", "RESUME", "OTHER"}`` (primary vs
+    ``additional_document_ids`` vs neither), and ``section_type`` when present.
+    Interview attachment metadata remains on ``sourceType`` / ``sourceTitle``.
     """
+    effective_top_k = min(top_k, MAX_RETRIEVAL_CHUNKS)
     return await retrieve_chunks_for_mode(
         db=db,
         document_id=document_id,
         query_embedding=query_embedding,
-        top_k=top_k,
+        top_k=effective_top_k,
         mode=get_default_retrieval_mode(),
         include_low_signal=include_low_signal,
         section_types=section_types,
@@ -720,4 +1276,5 @@ async def retrieve_chunks(
         source_types=source_types,
         additional_document_ids=additional_document_ids,
         query_text=query_text,
+        enforce_production_chunk_budget=True,
     )

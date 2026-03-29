@@ -123,3 +123,57 @@ async def test_ask_no_chunks_returns_fallback(client, demo_key_off, monkeypatch,
     assert "answer" in data
     assert "I don't have enough information" in data["answer"]
     assert data["citations"] == []
+
+
+@pytest.mark.asyncio
+async def test_ask_passes_additional_document_ids_to_retrieval(
+    client, demo_key_off, monkeypatch, force_auth
+):
+    """Optional additional_document_ids are validated and forwarded to retrieve_chunks."""
+    from app.db.base import async_session_maker
+    from app.models import Document, User
+
+    monkeypatch.setattr(settings, "openai_api_key", "sk-test")
+
+    user_id = uuid.uuid4()
+    extra_id = uuid.uuid4()
+    primary_id = uuid.uuid4()
+    async with async_session_maker() as db:
+        user = User(id=user_id, email="ask-multi@t.local")
+        db.add(user)
+        await db.commit()
+    await force_auth(user_id=user_id, email="ask-multi@t.local")
+    async with async_session_maker() as db:
+        for did, name in ((primary_id, "jd.pdf"), (extra_id, "cv.pdf")):
+            db.add(
+                Document(
+                    id=did,
+                    user_id=user_id,
+                    filename=name,
+                    s3_key=name,
+                    status="ready",
+                )
+            )
+        await db.commit()
+
+    retrieve_calls: list[dict] = []
+
+    async def _capture_retrieve(**kwargs):
+        retrieve_calls.append(dict(kwargs))
+        return []
+
+    with patch("app.routers.ask.retrieve_chunks", new_callable=AsyncMock, side_effect=_capture_retrieve):
+        with patch("app.routers.ask.embed_query", return_value=[0.1] * 1536):
+            resp = await client.post(
+                "/ask",
+                json={
+                    "document_id": str(primary_id),
+                    "question": "Hello?",
+                    "additional_document_ids": [str(extra_id), str(extra_id)],
+                },
+            )
+
+    assert resp.status_code == 200
+    assert retrieve_calls
+    assert all(c.get("document_id") == primary_id for c in retrieve_calls)
+    assert all(c.get("additional_document_ids") == [extra_id] for c in retrieve_calls)

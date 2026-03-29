@@ -1,6 +1,6 @@
 """LLM extraction of evaluation dimensions (rubric) from job description text.
 
-Uses ``settings.openai_chat_model`` (default: gpt-4o-mini). Final answer evaluation may use a
+Uses ``settings.model_fast`` (default: gpt-4o-mini). Final answer evaluation may use a
 higher-quality model via ``USE_HIGH_QUALITY_EVAL``; rubric extraction always stays on the
 default/cheaper chat model.
 """
@@ -83,7 +83,7 @@ Return JSON with exactly {RUBRIC_DIM_MIN}–{RUBRIC_DIM_MAX} dimensions as speci
     try:
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.chat.completions.create(
-            model=settings.openai_chat_model,
+            model=settings.model_fast,
             messages=[
                 {"role": "system", "content": _SYSTEM_PROMPT},
                 {"role": "user", "content": user_content},
@@ -105,7 +105,7 @@ Return JSON with exactly {RUBRIC_DIM_MIN}–{RUBRIC_DIM_MAX} dimensions as speci
         if len(normalized) < RUBRIC_DIM_MIN:
             # One repair pass: model returned too few items.
             repair = client.chat.completions.create(
-                model=settings.openai_chat_model,
+                model=settings.model_fast,
                 messages=[
                     {"role": "system", "content": _SYSTEM_PROMPT},
                     {

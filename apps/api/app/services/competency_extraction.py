@@ -116,7 +116,7 @@ Extract 8–12 competencies. Output JSON only."""
 
         client = OpenAI(api_key=settings.openai_api_key)
         response = client.chat.completions.create(
-            model=settings.openai_chat_model,
+            model=settings.model_fast,
             messages=[
                 {"role": "system", "content": system_prompt},
                 {"role": "user", "content": user_content},
