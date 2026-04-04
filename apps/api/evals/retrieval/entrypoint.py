@@ -23,7 +23,7 @@ from .schema import RetrievalEvalDataset
 
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(
-        description="Run PrepPilot retrieval evals in single-mode or comparison mode."
+        description="Run InterviewOS retrieval evals in single-mode or comparison mode."
     )
     dataset_group = parser.add_mutually_exclusive_group(required=True)
     dataset_group.add_argument(
