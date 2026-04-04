@@ -11,6 +11,12 @@ The initial foundation is intentionally small:
 
 No production routes import this package today. The goal is to keep eval inputs versioned, reviewable, and easy to expand into a full offline evaluation runner later.
 
+### CI regression (Postgres + real retrieval)
+
+`tests/evals/test_retrieval_eval_db_integration.py` seeds a **stable document UUID** (`ci_constants.PLATFORM_ENGINEER_JD_DOCUMENT_ID`, also listed in `cases/ci_fixture_map.json`) with chunk text aligned to `job_description_starter.json`. It mocks `embed_query` to a fixed vector (no `OPENAI_API_KEY` in CI) and asserts every case passes for **semantic**, **hybrid**, and **keyword** against the live SQL retrieval stack. This runs in the existing GitHub Actions `pytest` job.
+
+To exercise the CLI against the same map after you have loaded that corpus into your DB (e.g. by running that test once and pausing before teardown, or by inserting equivalent rows), use `--fixture-map evals/retrieval/cases/ci_fixture_map.json`.
+
 ### Dataset format
 
 Datasets are stored as JSON objects with this top-level shape:
