@@ -54,7 +54,7 @@ async def _check_db() -> tuple[bool, str | None]:
         await engine.dispose()
 
 
-@app.get("/health")
+@app.get("/health", tags=["health"])
 async def health():
     ok, err = await _check_db()
     clerk_configured = bool(settings.clerk_jwks_url)
@@ -66,7 +66,7 @@ async def health():
     )
 
 
-@app.get("/")
+@app.get("/", tags=["meta"])
 async def root():
     return {"message": "InterviewOS API"}
 
