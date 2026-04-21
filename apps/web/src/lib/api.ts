@@ -551,6 +551,41 @@ export async function analyzeFit(params: {
   return handleResponse<AnalyzeFitResult>(res);
 }
 
+// --- Role-specific study plan (JD only) ---
+
+export interface StudyPlanDay {
+  day: number;
+  theme: string;
+  topics: string[];
+  drills: string[];
+  mock_target: string;
+}
+
+export interface StudyPlanResult {
+  title: string;
+  role_title: string;
+  duration_days: number;
+  summary: string;
+  daily_plan: StudyPlanDay[];
+}
+
+export async function generateStudyPlan(params: {
+  documentId: string;
+  days: number;
+  focus?: string | null;
+}): Promise<StudyPlanResult> {
+  const body: Record<string, unknown> = { days: params.days };
+  const focus = params.focus?.trim();
+  if (focus) body.focus = focus;
+
+  const res = await fetch(`${API_BASE}/documents/${params.documentId}/study-plan`, {
+    method: "POST",
+    headers: await getAuthHeaders(),
+    body: JSON.stringify(body),
+  });
+  return handleResponse<StudyPlanResult>(res);
+}
+
 // --- Interview Prep API ---
 
 /** Per JD dimension: 0–10 score and why that score was assigned. */

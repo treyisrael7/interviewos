@@ -126,6 +126,37 @@ describe("api", () => {
     });
   });
 
+  describe("generateStudyPlan", () => {
+    it("POSTs days and optional focus to /documents/:id/study-plan", async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        text: () =>
+          Promise.resolve(
+            JSON.stringify({
+              title: "10-Day Interview Study Plan",
+              role_title: "Backend Engineer",
+              duration_days: 10,
+              summary: "Plan summary",
+              daily_plan: [],
+            })
+          ),
+      });
+      vi.stubGlobal("fetch", mockFetch);
+
+      const { generateStudyPlan } = await import("./api");
+      await generateStudyPlan({
+        documentId: "doc-123",
+        days: 10,
+        focus: "  system design  ",
+      });
+
+      const [url, init] = mockFetch.mock.calls[0];
+      expect(url).toBe("http://localhost:8000/documents/doc-123/study-plan");
+      const body = JSON.parse((init as RequestInit).body as string);
+      expect(body).toEqual({ days: 10, focus: "system design" });
+    });
+  });
+
   describe("ask", () => {
     it("sends document_id and question only (no user_id)", async () => {
       const mockFetch = vi.fn().mockResolvedValue({

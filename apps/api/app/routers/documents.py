@@ -15,6 +15,7 @@ from app.services.gap_analysis import generate_gap_analysis
 from app.services.ingestion import run_ingestion
 from app.services.interview.constants import USER_RESUME_DOC_DOMAIN
 from app.services.storage import get_storage
+from app.services.study_plan import generate_role_study_plan
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -660,6 +661,36 @@ class GapAnalysisOutput(BaseModel):
     resume_sources_considered: list[ResumeSourceUsed] = []
 
 
+class StudyPlanInput(BaseModel):
+    days: int = Field(
+        default=10,
+        ge=7,
+        le=14,
+        description="Length of plan in days (7-14).",
+    )
+    focus: str | None = Field(
+        default=None,
+        max_length=500,
+        description="Optional prep focus (e.g., system design, leadership stories).",
+    )
+
+
+class StudyPlanDayOutput(BaseModel):
+    day: int
+    theme: str
+    topics: list[str] = []
+    drills: list[str] = []
+    mock_target: str
+
+
+class StudyPlanOutput(BaseModel):
+    title: str
+    role_title: str
+    duration_days: int
+    summary: str
+    daily_plan: list[StudyPlanDayOutput] = []
+
+
 def _make_source_s3_key(document_id: uuid.UUID, filename: str) -> str:
     safe = re.sub(r"[^\w\.\-]", "_", filename)
     return f"sources/{document_id}/{safe}"
@@ -828,3 +859,25 @@ async def gap_analysis(
             detail="No resume source found. Upload an account-level resume or attach a resume source first.",
         )
     return GapAnalysisOutput(**analysis)
+
+
+@router.post("/{document_id}/study-plan", response_model=StudyPlanOutput)
+async def study_plan(
+    document_id: uuid.UUID,
+    body: StudyPlanInput,
+    current_user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_db),
+):
+    """Generate a role-specific 7-14 day interview prep plan from the JD."""
+    doc = await _get_document_for_user(db, document_id, current_user)
+    if doc.status != "ready":
+        raise HTTPException(status_code=400, detail="Document must be ready")
+    if doc.doc_domain != "job_description":
+        raise HTTPException(status_code=400, detail="Study plan requires a job description document")
+
+    plan = generate_role_study_plan(
+        document=doc,
+        days=body.days,
+        focus=body.focus,
+    )
+    return StudyPlanOutput(**plan)

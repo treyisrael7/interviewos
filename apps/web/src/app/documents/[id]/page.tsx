@@ -10,11 +10,13 @@ import {
   getAnalyzeFitLatest,
   parseAskStructuredAnswer,
   type AskResponse,
+  type StudyPlanResult,
 } from "@/lib/api";
 import { AnalyzeFitDisplay } from "@/components/AnalyzeFitDisplay";
 import { AskAnswerDisplay } from "@/components/AskAnswerDisplay";
 import { formatQueryError } from "@/lib/query-error";
 import { useAnalyzeFitMutation } from "@/hooks/use-analyze-fit";
+import { useStudyPlanMutation } from "@/hooks/use-study-plan";
 import { queryKeys } from "@/lib/query-keys";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDocument, useDeleteDocumentMutation } from "@/hooks/use-documents";
@@ -38,7 +40,7 @@ const STATUS_STYLES: Record<string, string> = {
   failed: "text-red-700 bg-red-100/80 ring-1 ring-red-200/60",
 };
 
-type Tab = "chat" | "fit" | "interview";
+type Tab = "chat" | "fit" | "study" | "interview";
 
 const TAB_BASE =
   "rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-zenodrift-accent focus-visible:ring-offset-2 focus-visible:ring-offset-white";
@@ -97,6 +99,8 @@ function DocumentPageContent() {
     const t = (tabQuery || "").toLowerCase();
     if (t === "fit") {
       setTab(hasAccountResume ? "fit" : "chat");
+    } else if (t === "study") {
+      setTab("study");
     } else if (t === "interview") setTab("interview");
     else if (t === "chat" || t === "ask") setTab("chat");
   }, [
@@ -243,6 +247,22 @@ function DocumentPageContent() {
             )}
             {showInterviewPrep && (
               <button
+                onClick={() => setTab("study")}
+                role="tab"
+                aria-selected={tab === "study"}
+                aria-controls="study-panel"
+                id="study-tab"
+                className={`${TAB_BASE} -mb-px ${
+                  tab === "study"
+                    ? "border-b-2 border-zenodrift-accent text-zenodrift-text-strong"
+                    : "border-b-2 border-transparent text-zenodrift-text-muted hover:text-zenodrift-text"
+                }`}
+              >
+                Study Plan
+              </button>
+            )}
+            {showInterviewPrep && (
+              <button
                 onClick={() => setTab("interview")}
                 role="tab"
                 aria-selected={tab === "interview"}
@@ -283,6 +303,11 @@ function DocumentPageContent() {
             {tab === "fit" && showAnalyzeFit && doc.status === "ready" && (
               <div id="fit-panel" role="tabpanel" aria-labelledby="fit-tab">
                 <AnalyzeFitTab documentId={id} />
+              </div>
+            )}
+            {tab === "study" && showInterviewPrep && doc.status === "ready" && (
+              <div id="study-panel" role="tabpanel" aria-labelledby="study-tab">
+                <StudyPlanTab documentId={id} />
               </div>
             )}
             {tab === "interview" && showInterviewPrep && doc && (
@@ -485,6 +510,168 @@ function AnalyzeFitTab({ documentId }: { documentId: string }) {
             Analysis
           </h2>
           <AnalyzeFitDisplay data={displayAnalysis} />
+        </section>
+      )}
+    </div>
+  );
+}
+
+function StudyPlanTab({ documentId }: { documentId: string }) {
+  const [days, setDays] = useState(10);
+  const [focus, setFocus] = useState("");
+  const [error, setError] = useState<string | null>(null);
+  const [plan, setPlan] = useState<StudyPlanResult | null>(null);
+  const mutation = useStudyPlanMutation(documentId);
+
+  const handleGenerate = () => {
+    if (mutation.isPending) return;
+    setError(null);
+    mutation.mutate(
+      { days, focus: focus.trim() || undefined },
+      {
+        onSuccess: (data) => setPlan(data),
+        onError: (err) => {
+          setError(
+            err instanceof ApiError
+              ? String(err.detail || err.message)
+              : "Could not generate study plan"
+          );
+        },
+      }
+    );
+  };
+
+  return (
+    <div className="space-y-6 pb-8">
+      <p className="text-sm leading-relaxed text-zenodrift-text">
+        Generate a role-specific prep plan from this JD. Pick a timeline between{" "}
+        <strong>7 and 14 days</strong>, then get daily topics, drills, and mock
+        interview targets.
+      </p>
+
+      <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
+        <div className="space-y-2">
+          <label
+            htmlFor="study-plan-days"
+            className="block text-sm font-medium text-zenodrift-text-strong"
+          >
+            Plan length
+          </label>
+          <input
+            id="study-plan-days"
+            type="number"
+            min={7}
+            max={14}
+            value={days}
+            onChange={(e) => {
+              const parsed = Number(e.target.value);
+              if (!Number.isFinite(parsed)) return;
+              setDays(Math.max(7, Math.min(14, Math.round(parsed))));
+            }}
+            disabled={mutation.isPending}
+            className="w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-zenodrift-text shadow-sm ring-1 ring-slate-200/60 focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
+          />
+        </div>
+        <div className="space-y-2">
+          <label
+            htmlFor="study-plan-focus"
+            className="block text-sm font-medium text-zenodrift-text-strong"
+          >
+            Optional focus{" "}
+            <span className="font-normal text-zenodrift-text-muted">
+              (e.g. system design, leadership stories)
+            </span>
+          </label>
+          <textarea
+            id="study-plan-focus"
+            value={focus}
+            onChange={(e) => setFocus(e.target.value)}
+            rows={3}
+            disabled={mutation.isPending}
+            placeholder="Prioritize architecture and stakeholder communication..."
+            className="w-full rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-zenodrift-text shadow-sm ring-1 ring-slate-200/60 placeholder-zenodrift-text-muted focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
+          />
+        </div>
+      </div>
+
+      <button
+        type="button"
+        onClick={handleGenerate}
+        disabled={mutation.isPending}
+        className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 disabled:opacity-50"
+      >
+        {mutation.isPending
+          ? "Building plan…"
+          : plan
+            ? "Regenerate plan"
+            : "Generate study plan"}
+      </button>
+
+      {error && (
+        <div
+          className="rounded-xl bg-red-50/80 px-4 py-3 text-sm text-red-700 shadow-sm ring-1 ring-red-200/50"
+          role="alert"
+        >
+          {error}
+        </div>
+      )}
+
+      {plan && (
+        <section className="space-y-4 border-t border-slate-200/80 pt-6">
+          <div>
+            <h2 className="text-base font-semibold text-zenodrift-text-strong">
+              {plan.title}
+            </h2>
+            <p className="mt-1 text-sm text-zenodrift-text">
+              {plan.role_title} · {plan.duration_days} days
+            </p>
+            {plan.summary.trim() ? (
+              <p className="mt-2 text-sm leading-relaxed text-zenodrift-text">
+                {plan.summary}
+              </p>
+            ) : null}
+          </div>
+
+          <div className="space-y-3">
+            {plan.daily_plan.map((day) => (
+              <article
+                key={day.day}
+                className="rounded-xl border border-slate-200/80 bg-white/70 px-4 py-3 shadow-sm"
+              >
+                <div className="flex flex-wrap items-center gap-2">
+                  <p className="text-sm font-semibold text-zenodrift-text-strong">
+                    Day {day.day}
+                  </p>
+                  {day.theme.trim() ? (
+                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-zenodrift-text">
+                      {day.theme}
+                    </span>
+                  ) : null}
+                </div>
+                {day.topics.length > 0 && (
+                  <p className="mt-2 text-sm text-zenodrift-text">
+                    <span className="font-medium text-zenodrift-text-strong">Topics: </span>
+                    {day.topics.join(", ")}
+                  </p>
+                )}
+                {day.drills.length > 0 && (
+                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zenodrift-text">
+                    {day.drills.map((drill, idx) => (
+                      <li key={`${day.day}-drill-${idx}`}>{drill}</li>
+                    ))}
+                  </ul>
+                )}
+                {day.mock_target.trim() ? (
+                  <p className="mt-2 rounded-lg bg-amber-50/80 px-3 py-2 text-xs text-amber-950 ring-1 ring-amber-200/70">
+                    <span className="font-semibold uppercase tracking-wide text-amber-900/90">
+                      Mock target
+                    </span>{" "}
+                    {day.mock_target}
+                  </p>
+                ) : null}
+              </article>
+            ))}
+          </div>
         </section>
       )}
     </div>

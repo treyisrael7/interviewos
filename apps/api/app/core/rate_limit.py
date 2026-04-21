@@ -7,6 +7,7 @@ from typing import Literal
 RouteKey = Literal[
     "ask",
     "analyze-fit",
+    "study-plan",
     "fit-history",
     "retrieve",
     "documents/ingest",
@@ -18,6 +19,7 @@ RouteKey = Literal[
 RATE_LIMITS: dict[str, tuple[int, int]] = {
     "ask": (10, 3600),  # 10 per hour
     "analyze-fit": (10, 3600),  # 10 per hour (LLM + retrieval)
+    "study-plan": (10, 3600),  # 10 per hour (LLM plan generation)
     "fit-history": (120, 3600),  # read-heavy; generous cap
     "retrieve": (60, 3600),  # 60 per hour
     "documents/ingest": (3, 86400),  # 3 per day
@@ -47,6 +49,8 @@ def _path_to_route(path: str) -> RouteKey | None:
     # /documents/{uuid}/ingest
     if path.startswith("/documents/") and path.endswith("/ingest"):
         return "documents/ingest"
+    if path.startswith("/documents/") and path.endswith("/study-plan"):
+        return "study-plan"
     return None
 
 # in-memory: {key: [timestamp, ...]}
