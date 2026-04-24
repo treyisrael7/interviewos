@@ -4,6 +4,7 @@ import Link from "next/link";
 import { useState } from "react";
 import { ApiError } from "@/lib/api";
 import { formatQueryError } from "@/lib/query-error";
+import { LoadingRow } from "@/components/ui/loading";
 import {
   useUserResume,
   useUploadUserResumeMutation,
@@ -143,7 +144,7 @@ export function AccountResumeSection() {
           </p>
         )}
         {loading ? (
-          <p className="text-sm text-zenodrift-text-muted">Checking your resume…</p>
+          <LoadingRow message="Checking your resume…" />
         ) : (
           <>
             <p className="text-xs leading-relaxed text-zenodrift-text-muted">

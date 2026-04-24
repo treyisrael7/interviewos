@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
+import { LoadingCenter } from "@/components/ui/loading";
 import { InterviewSessionView } from "@/components/interview/InterviewSessionView";
 import { formatQueryError } from "@/lib/query-error";
 import { useInterviewSession } from "@/hooks/use-interview-session";
@@ -36,9 +37,10 @@ export default function InterviewSessionPage() {
     <GradientShell fillViewport>
       {loading && (
         <div className="flex flex-1 items-center justify-center py-8">
-          <div
-            className="h-10 w-10 animate-spin rounded-full border-2 border-white/60 border-t-zenodrift-accent"
-            aria-label="Loading session"
+          <LoadingCenter
+            variant="light"
+            message="Loading session…"
+            label="Loading session"
           />
         </div>
       )}

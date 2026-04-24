@@ -11,6 +11,7 @@ import {
   parseResumeCoachAnswer,
   type AskResponse,
 } from "@/lib/api";
+import { LoadingRow } from "@/components/ui/loading";
 import { useUserResume } from "@/hooks/use-user-resume";
 
 export default function ResumeCoachPage() {
@@ -65,7 +66,9 @@ export default function ResumeCoachPage() {
         </p>
 
         {resumeLoading ? (
-          <p className="mt-8 text-sm text-zenodrift-text-muted">Checking your resume…</p>
+          <div className="mt-8">
+            <LoadingRow message="Checking your resume…" />
+          </div>
         ) : !hasResume ? (
           <div
             className="mt-8 rounded-2xl border border-amber-200/80 bg-amber-50/80 px-5 py-4 text-sm text-amber-950"

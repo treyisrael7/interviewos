@@ -3,6 +3,7 @@
 import Link from "next/link";
 import { useParams } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
+import { FadeIn, LoadingCenter, LoadingSpinner } from "@/components/ui/loading";
 import { InterviewSetupPanel } from "@/components/interview/InterviewSetupPanel";
 import { formatQueryError } from "@/lib/query-error";
 import { useDocument } from "@/hooks/use-documents";
@@ -48,9 +49,10 @@ export default function InterviewSetupPage() {
     >
       {loading && (
         <div className="flex min-h-[400px] items-center justify-center">
-          <div
-            className="h-10 w-10 animate-spin rounded-full border-2 border-white/60 border-t-zenodrift-accent"
-            aria-label="Loading document"
+          <LoadingCenter
+            variant="light"
+            message="Loading document…"
+            label="Loading document"
           />
         </div>
       )}
@@ -73,18 +75,17 @@ export default function InterviewSetupPage() {
       {doc && !loading && (
         <div className="flex flex-col items-center gap-8">
           {doc.status === "processing" && (
-            <div className="dashboard-card w-full max-w-md px-6 py-8 text-center">
-              <div
-                className="mx-auto mb-4 h-10 w-10 animate-spin rounded-full border-2 border-amber-300 border-t-zenodrift-accent"
-                aria-hidden
-              />
+            <FadeIn className="dashboard-card w-full max-w-md px-6 py-8 text-center">
+              <div className="mx-auto mb-4 flex justify-center">
+                <LoadingSpinner size="lg" variant="warm" decorative />
+              </div>
               <p className="text-amber-800 font-medium">
                 Document is being processed…
               </p>
               <p className="mt-2 text-sm text-amber-700">
                 This page will update automatically when ready.
               </p>
-            </div>
+            </FadeIn>
           )}
 
           {(doc.status === "uploaded" || doc.status === "pending") && (

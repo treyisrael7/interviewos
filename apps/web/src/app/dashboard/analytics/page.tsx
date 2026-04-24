@@ -13,6 +13,7 @@ import {
   YAxis,
 } from "recharts";
 import { GradientShell } from "@/components/GradientShell";
+import { AnalyticsOverviewSkeleton } from "@/components/ui/loading";
 import { useInterviewAnalyticsOverview } from "@/hooks/use-interview-analytics";
 import { formatQueryError } from "@/lib/query-error";
 import { Lightbulb, TrendingDown, TrendingUp } from "lucide-react";
@@ -132,11 +133,8 @@ export default function InterviewAnalyticsPage() {
         )}
 
         {isPending && !queryError && (
-          <div className="flex justify-center py-20">
-            <div
-              className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-zenodrift-accent"
-              aria-label="Loading analytics"
-            />
+          <div className="py-10">
+            <AnalyticsOverviewSkeleton />
           </div>
         )}
 

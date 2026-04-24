@@ -4,6 +4,7 @@ import { useCallback, useEffect, useRef, useState, useMemo } from "react";
 import { useRouter, usePathname } from "next/navigation";
 import { motion, AnimatePresence } from "framer-motion";
 import type { DocumentSummary } from "@/lib/api";
+import { LoadingCenter } from "@/components/ui/loading";
 import { useDocuments } from "@/hooks/use-documents";
 import { useUserResume } from "@/hooks/use-user-resume";
 
@@ -226,10 +227,12 @@ export function LibraryModal({ isOpen, onClose }: LibraryModalProps) {
               </div>
               <div className="flex-1 overflow-y-auto px-6 pb-6">
                 {loading ? (
-                  <div className="flex items-center justify-center py-12">
-                    <div
-                      className="h-8 w-8 animate-spin rounded-full border-2 border-slate-200 border-t-orange-500"
-                      aria-hidden
+                  <div className="py-10">
+                    <LoadingCenter
+                      size="md"
+                      variant="modal"
+                      message="Loading job descriptions…"
+                      label="Loading job descriptions"
                     />
                   </div>
                 ) : filteredDocs.length === 0 ? (

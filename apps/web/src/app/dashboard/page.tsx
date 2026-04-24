@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { motion, useReducedMotion } from "framer-motion";
 import { useLibrary } from "@/contexts/LibraryContext";
 import { GradientShell } from "@/components/GradientShell";
 import { ApiError, type DocumentSummary } from "@/lib/api";
@@ -15,6 +16,10 @@ import {
   useDeleteAllDocumentsMutation,
 } from "@/hooks/use-documents";
 import { AccountResumeSection } from "@/components/dashboard/AccountResumeSection";
+import {
+  DocumentListSkeleton,
+  LoadingSpinner,
+} from "@/components/ui/loading";
 import { useUserResume } from "@/hooks/use-user-resume";
 
 const STATUS_LABELS: Record<string, string> = {
@@ -68,6 +73,7 @@ function formatUploadedAt(createdAt: string | undefined): string {
 }
 
 export default function DashboardPage() {
+  const reduceMotion = useReducedMotion();
   const router = useRouter();
   const {
     data: docs = [],
@@ -244,10 +250,7 @@ export default function DashboardPage() {
                 />
                 {uploadMutation.isPending ? (
                   <div className="flex flex-col items-center gap-4">
-                    <div
-                      className="h-10 w-10 animate-spin rounded-full border-2 border-white/50 border-t-zenodrift-accent"
-                      aria-hidden
-                    />
+                    <LoadingSpinner size="lg" variant="light" label="Uploading" />
                     <span className="text-sm font-medium text-zenodrift-text-muted">
                       Uploading and processing…
                     </span>
@@ -323,18 +326,24 @@ export default function DashboardPage() {
           )}
         </div>
         {documentsLoading ? (
-          <div className="flex items-center justify-center py-10">
-            <div
-              className="h-8 w-8 animate-spin rounded-full border-2 border-neutral-200 border-t-zenodrift-accent"
-              aria-label="Loading documents"
-            />
+          <div className="py-6">
+            <DocumentListSkeleton />
           </div>
         ) : jobDescriptionDocs.length === 0 ? (
           <p className="py-6 text-center text-sm text-zenodrift-text-muted">
             No job descriptions yet. Upload a JD PDF in the area above to get started.
           </p>
         ) : (
-          <ul className="divide-y divide-neutral-100">
+          <motion.ul
+            className="divide-y divide-neutral-100"
+            {...(reduceMotion
+              ? {}
+              : {
+                  initial: { opacity: 0, y: 10 },
+                  animate: { opacity: 1, y: 0 },
+                  transition: { duration: 0.42, ease: [0.22, 1, 0.36, 1] },
+                })}
+          >
             {jobDescriptionDocs.map((doc) => (
               <li
                 key={doc.id}
@@ -480,7 +489,7 @@ export default function DashboardPage() {
                 </div>
               </li>
             ))}
-          </ul>
+          </motion.ul>
         )}
       </section>
     </GradientShell>

@@ -4,6 +4,7 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
+import { LoadingCenter, LoadingRow } from "@/components/ui/loading";
 import { InterviewFocusMode } from "@/components/interview/InterviewFocusMode";
 import {
   ApiError,
@@ -137,10 +138,7 @@ function DocumentPageContent() {
     <GradientShell>
       {loading && (
         <div className="flex justify-center py-20">
-          <div
-            className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-zenodrift-accent"
-            aria-label="Loading document"
-          />
+          <LoadingCenter message="Loading document…" />
         </div>
       )}
 
@@ -335,10 +333,7 @@ export default function DocumentPage() {
       fallback={
         <GradientShell>
           <div className="flex justify-center py-20">
-            <div
-              className="h-10 w-10 animate-spin rounded-full border-2 border-neutral-200 border-t-zenodrift-accent"
-              aria-label="Loading"
-            />
+            <LoadingCenter message="Loading…" label="Loading page" />
           </div>
         </GradientShell>
       }
@@ -426,7 +421,7 @@ function AnalyzeFitTab({ documentId }: { documentId: string }) {
       </p>
 
       {resumeLoading ? (
-        <p className="text-sm text-zenodrift-text-muted">Checking resume…</p>
+        <LoadingRow message="Checking resume…" />
       ) : !hasResume ? (
         <div
           className="rounded-xl border border-amber-200/80 bg-amber-50/60 px-4 py-3 text-sm text-amber-950"
@@ -446,7 +441,7 @@ function AnalyzeFitTab({ documentId }: { documentId: string }) {
       ) : (
         <>
           {latestQuery.isPending && (
-            <p className="text-sm text-zenodrift-text-muted">Loading saved analysis…</p>
+            <LoadingRow message="Loading saved analysis…" size="sm" />
           )}
           {displayAnalysis && savedLabel && !latestQuery.isPending && (
             <div
