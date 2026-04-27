@@ -8,17 +8,19 @@ and how retrieval, LLM calls, and the interview product fit together.
 1. PRODUCT SUMMARY
 --------------------------------------------------------------------------------
 
-The product (branded "InterviewOS" in README and API titles) is an interview-
-preparation application grounded in real job description (JD) PDFs:
+The product (branded "InterviewOS" in README and API titles) is a focused
+interview-practice application grounded in a real job description (JD) and the
+user's resume:
 
   - Users upload JD PDFs; the system parses, chunks, embeds, and indexes text
     in PostgreSQL with pgvector for semantic search.
-  - Users can attach an account-level resume (reused across JDs) and optional
-    company notes/URLs per document ("Interview Kit" sources).
-  - Features include: RAG Q&A with citations (/ask), raw hybrid retrieval
-    (/retrieve), structured JD↔resume fit analysis (/analyze-fit), and a full
-    interview practice loop: question generation, answer submission, rubric-
-    based evaluation with evidence from JD/resume chunks.
+  - Users upload an account-level resume that is reused across JDs.
+  - The core loop is interview practice: question generation, answer
+    submission, and rubric-based feedback grounded in JD/resume chunks.
+  - Supporting surfaces include cited Q&A (/ask) and raw retrieval (/retrieve)
+    for debugging or prep. Broader surfaces such as fit analysis, analytics,
+    study plans, gap analysis, and extra company/notes sources exist in the
+    repo but are secondary to the lean product path.
   - Auth is Clerk (JWT Bearer) for the Next.js client; optional API "demo mode"
     uses a fixed sandbox user and x-demo-key header for tools like curl.
 
@@ -322,10 +324,10 @@ section_type, is_low_signal. Same embedding + retrieve_chunks stack as /ask but
 no LLM summarization — useful for debugging and UIs that show raw context.
 
 --------------------------------------------------------------------------------
-15. /analyze-fit — FIT ANALYSIS + CACHING
+15. /analyze-fit — SECONDARY FIT ANALYSIS + CACHING
 --------------------------------------------------------------------------------
 
-Router loads JD and resume documents, fingerprints chunks (content_hash or hash
+Secondary prep surface. Router loads JD and resume documents, fingerprints chunks (content_hash or hash
 of content), normalizes optional question → query_fingerprint. If a FitAnalysis
 row exists for same user, ids, query fingerprint, and both chunk fingerprints,
 returns cached payload (skips embed, retrieve, LLM).
@@ -364,15 +366,15 @@ Evaluate (POST /interview/evaluate):
   - evaluate_answer_with_retrieval — retrieves JD (+ resume) chunks, may use
     llm_cache for retrieval pool per session and evaluation dedupe keys
   - Scoring helpers: rubric dimension mean, score_breakdown, feedback_summary
-  - Updates InterviewAnswer; computes performance_profile aggregates
+  - Updates InterviewAnswer; computes secondary performance_profile aggregates
     (performance_profile.compute_performance_profile, profile_answer_from_
-    feedback) on session for adaptive behavior
+    feedback) on session for secondary adaptive behavior
 
 Read routes: fetch sessions, questions, answers for UI.
 
-Analytics route: dashboard aggregates.
+Analytics route: secondary dashboard aggregates.
 
-Adaptive engine (app.services.adaptive_engine):
+Adaptive engine (app.services.adaptive_engine, secondary behavior):
   - select_next_question_type(performance_profile) uses thresholds on technical,
     behavioral, communication scores; weak dimensions bias next question type;
     if all strong, "hard" questions
@@ -383,13 +385,15 @@ get_user_resume_document_id, retrieve_interview_evidence — ties rubric evidenc
 to chunk retrieval.
 
 --------------------------------------------------------------------------------
-18. DOCUMENTS ROUTER — BEYOND INGESTION
+18. DOCUMENTS ROUTER — INGESTION PLUS SECONDARY PREP SURFACES
 --------------------------------------------------------------------------------
 
-documents.py includes listing documents with role profile, competency coverage
-from SQL aggregation over interview answers, gap analysis generation, library
-modal support, reingest, delete, presign/confirm, etc. (large file; central to
-dashboard and document detail pages).
+documents.py includes the core document lifecycle plus several secondary prep
+surfaces: listing documents with role profile, competency coverage from SQL
+aggregation over interview answers, gap analysis generation, library modal
+support, reingest, delete, presign/confirm, etc. For the lean product path, the
+must-work behavior is upload/confirm/ingest and document readiness for interview
+practice.
 
 --------------------------------------------------------------------------------
 19. USER RESUME
@@ -432,7 +436,7 @@ Entry: apps/web/src/app/
   layout.tsx — global layout, providers
   sign-in / sign-up — Clerk catch-all routes
   dashboard/page.tsx — main hub (documents, resume section)
-  dashboard/analytics/page.tsx — interview analytics charts
+  dashboard/analytics/page.tsx — secondary interview analytics charts
   documents/[id]/page.tsx — document detail, ask, library, etc.
   interview/setup/[id]/page.tsx — session setup for a JD
   interview/session/[sessionId]/page.tsx — live interview UI
@@ -497,9 +501,10 @@ docs/s3-cors-config.json — reference for browser PUT to presigned URLs.
 4) User opens interview setup: POST /interview/generate creates session and
    questions grounded in JD (+ resume evidence).
 5) User answers: POST /interview/evaluate runs retrieval + LLM evaluation,
-   enforces monthly quota, updates performance_profile for adaptivity.
-6) User may use /ask for ad-hoc Q&A or /analyze-fit for structured fit report
-   (cached when inputs unchanged).
+   enforces monthly quota, and stores grounded feedback.
+6) Supporting paths such as /ask, /analyze-fit, analytics, study plans, and
+   extra sources may exist, but they should not be treated as the primary user
+   journey.
 
 --------------------------------------------------------------------------------
 28. FILES AND MODULES WORTH BOOKMARKING

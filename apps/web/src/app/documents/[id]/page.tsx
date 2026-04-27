@@ -4,27 +4,19 @@ import { Suspense, useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useParams, useRouter, useSearchParams } from "next/navigation";
 import { GradientShell } from "@/components/GradientShell";
-import { LoadingCenter, LoadingRow } from "@/components/ui/loading";
+import { LoadingCenter } from "@/components/ui/loading";
 import { useToast } from "@/components/ui/ToastProvider";
 import { InterviewFocusMode } from "@/components/interview/InterviewFocusMode";
 import {
   ApiError,
-  getAnalyzeFitLatest,
   parseAskStructuredAnswer,
   type AskResponse,
-  type StudyPlanResult,
 } from "@/lib/api";
-import { AnalyzeFitDisplay } from "@/components/AnalyzeFitDisplay";
 import { AskAnswerDisplay } from "@/components/AskAnswerDisplay";
 import { formatQueryError } from "@/lib/query-error";
-import { useAnalyzeFitMutation } from "@/hooks/use-analyze-fit";
-import { useStudyPlanMutation } from "@/hooks/use-study-plan";
-import { queryKeys } from "@/lib/query-keys";
-import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useDocument, useDeleteDocumentMutation } from "@/hooks/use-documents";
 import { useAskQuestionMutation } from "@/hooks/use-ask-question";
 import { useDelayedBusy } from "@/hooks/use-delayed-busy";
-import { useUserResume } from "@/hooks/use-user-resume";
 
 const STATUS_LABELS: Record<string, string> = {
   pending: "Pending",
@@ -43,7 +35,7 @@ const STATUS_STYLES: Record<string, string> = {
   failed: "text-red-700 bg-red-100/80 ring-1 ring-red-200/60",
 };
 
-type Tab = "chat" | "fit" | "study" | "interview";
+type Tab = "chat" | "interview";
 
 const TAB_BASE =
   "rounded-t-lg px-4 py-2.5 text-sm font-medium transition-colors duration-200 focus:outline-none focus-visible:ring-2 focus-visible:ring-zenodrift-accent focus-visible:ring-offset-2 focus-visible:ring-offset-white";
@@ -62,7 +54,6 @@ function DocumentPageContent() {
     isError,
     error: loadError,
   } = useDocument(id);
-  const { data: resumeStatus, isPending: resumeLoading } = useUserResume();
 
   const deleteMutation = useDeleteDocumentMutation();
   const { showToast } = useToast();
@@ -74,10 +65,6 @@ function DocumentPageContent() {
 
   const showInterviewPrep =
     doc?.status === "ready" && doc?.doc_domain === "job_description";
-  const hasAccountResume = Boolean(
-    resumeStatus?.has_resume && resumeStatus.document_id
-  );
-  const showAnalyzeFit = showInterviewPrep && hasAccountResume;
 
   const tabSyncRef = useRef<{ docId: string; tabQuery: string | null } | null>(
     null
@@ -90,7 +77,6 @@ function DocumentPageContent() {
 
   useEffect(() => {
     if (!showInterviewPrep || !doc || doc.id !== id) return;
-    if (resumeLoading) return;
     const tabQuery = searchParams.get("tab");
     const prev = tabSyncRef.current;
     if (
@@ -102,26 +88,14 @@ function DocumentPageContent() {
     }
     tabSyncRef.current = { docId: doc.id, tabQuery };
     const t = (tabQuery || "").toLowerCase();
-    if (t === "fit") {
-      setTab(hasAccountResume ? "fit" : "chat");
-    } else if (t === "study") {
-      setTab("study");
-    } else if (t === "interview") setTab("interview");
+    if (t === "interview") setTab("interview");
     else if (t === "chat" || t === "ask") setTab("chat");
   }, [
     id,
     showInterviewPrep,
     doc,
     searchParams,
-    resumeLoading,
-    hasAccountResume,
   ]);
-
-  useEffect(() => {
-    if (tab === "fit" && !hasAccountResume && !resumeLoading) {
-      setTab("chat");
-    }
-  }, [tab, hasAccountResume, resumeLoading]);
 
   const handleDelete = () => {
     if (!doc || !confirm(`Delete "${doc.filename}"? This cannot be undone.`)) return;
@@ -235,38 +209,6 @@ function DocumentPageContent() {
             >
               Ask
             </button>
-            {showAnalyzeFit && (
-              <button
-                onClick={() => setTab("fit")}
-                role="tab"
-                aria-selected={tab === "fit"}
-                aria-controls="fit-panel"
-                id="fit-tab"
-                className={`${TAB_BASE} -mb-px ${
-                  tab === "fit"
-                    ? "border-b-2 border-zenodrift-accent text-zenodrift-text-strong"
-                    : "border-b-2 border-transparent text-zenodrift-text-muted hover:text-zenodrift-text"
-                }`}
-              >
-                Analyze Fit
-              </button>
-            )}
-            {showInterviewPrep && (
-              <button
-                onClick={() => setTab("study")}
-                role="tab"
-                aria-selected={tab === "study"}
-                aria-controls="study-panel"
-                id="study-tab"
-                className={`${TAB_BASE} -mb-px ${
-                  tab === "study"
-                    ? "border-b-2 border-zenodrift-accent text-zenodrift-text-strong"
-                    : "border-b-2 border-transparent text-zenodrift-text-muted hover:text-zenodrift-text"
-                }`}
-              >
-                Study Plan
-              </button>
-            )}
             {showInterviewPrep && (
               <button
                 onClick={() => setTab("interview")}
@@ -306,16 +248,6 @@ function DocumentPageContent() {
                 <ChatTab documentId={id} />
               </div>
             )}
-            {tab === "fit" && showAnalyzeFit && doc.status === "ready" && (
-              <div id="fit-panel" role="tabpanel" aria-labelledby="fit-tab">
-                <AnalyzeFitTab documentId={id} />
-              </div>
-            )}
-            {tab === "study" && showInterviewPrep && doc.status === "ready" && (
-              <div id="study-panel" role="tabpanel" aria-labelledby="study-tab">
-                <StudyPlanTab documentId={id} />
-              </div>
-            )}
             {tab === "interview" && showInterviewPrep && doc && (
               <div
                 id="interview-panel"
@@ -348,344 +280,6 @@ export default function DocumentPage() {
     >
       <DocumentPageContent />
     </Suspense>
-  );
-}
-
-function AnalyzeFitTab({ documentId }: { documentId: string }) {
-  const queryClient = useQueryClient();
-  const { data: resume, isPending: resumeLoading } = useUserResume();
-  const [focusQuestion, setFocusQuestion] = useState("");
-  const [fitError, setFitError] = useState<string | null>(null);
-  const fitMutation = useAnalyzeFitMutation(documentId);
-  const { showToast } = useToast();
-  const fitBusy = useDelayedBusy(fitMutation.isPending);
-
-  const hasResume = Boolean(resume?.has_resume && resume.document_id);
-  const resumeId = resume?.document_id ?? "";
-
-  const latestQuery = useQuery({
-    queryKey: queryKeys.analyzeFitLatest(documentId, resumeId),
-    queryFn: () => getAnalyzeFitLatest(documentId, resumeId),
-    enabled: hasResume && Boolean(resumeId),
-    staleTime: 0,
-  });
-
-  const saved = latestQuery.data;
-  const displayAnalysis =
-    saved?.has_analysis && saved.analysis ? saved.analysis : null;
-
-  const handleAnalyze = () => {
-    if (!hasResume || fitMutation.isPending) return;
-    setFitError(null);
-    fitMutation.mutate(
-      { question: focusQuestion.trim() || undefined },
-      {
-        onSuccess: (data) => {
-          queryClient.setQueryData(
-            queryKeys.analyzeFitLatest(documentId, resumeId),
-            {
-              has_analysis: true,
-              analysis: data,
-              created_at: new Date().toISOString(),
-              cache_hit_default_question: !focusQuestion.trim(),
-            }
-          );
-          showToast({
-            tone: "success",
-            message: displayAnalysis ? "Fit analysis refreshed." : "Fit analysis generated.",
-          });
-        },
-        onError: (err) => {
-          if (err instanceof Error && err.message === "RESUME_REQUIRED") {
-            const message =
-              "Add your resume on the dashboard first. We need it to compare you to this job.";
-            setFitError(message);
-            showToast({ tone: "info", message });
-            return;
-          }
-          const message =
-            err instanceof ApiError
-              ? String(err.detail || err.message)
-              : "Could not analyze fit";
-          setFitError(message);
-          showToast({ tone: "error", message });
-        },
-      }
-    );
-  };
-
-  const savedLabel =
-    saved?.created_at &&
-    (() => {
-      try {
-        return new Date(saved.created_at).toLocaleString(undefined, {
-          dateStyle: "medium",
-          timeStyle: "short",
-        });
-      } catch {
-        return saved.created_at;
-      }
-    })();
-
-  return (
-    <div className="space-y-6 pb-8">
-      <p className="text-sm leading-relaxed text-zenodrift-text">
-        We line this job up with your{" "}
-        <strong>account resume</strong>: what matches, what&apos;s missing, a fit score, and
-        specific tweaks you could make. Your last run stays put until the job or resume changes
-        (no surprise API cost). Hit Refresh after you change something.
-      </p>
-
-      {resumeLoading ? (
-        <LoadingRow message="Checking resume…" />
-      ) : !hasResume ? (
-        <div
-          className="rounded-xl border border-amber-200/80 bg-amber-50/60 px-4 py-3 text-sm text-amber-950"
-          role="status"
-        >
-          <p className="font-medium text-amber-950">No account resume yet</p>
-          <p className="mt-1 text-amber-900/90">
-            Upload a PDF on the dashboard so we can compare it to this job.
-          </p>
-          <Link
-            href="/dashboard"
-            className="mt-3 inline-block text-sm font-medium text-orange-700 underline-offset-2 hover:underline focus:outline-none focus-visible:ring-2 focus-visible:ring-orange-400 focus-visible:rounded"
-          >
-            Go to dashboard →
-          </Link>
-        </div>
-      ) : (
-        <>
-          {latestQuery.isPending && (
-            <LoadingRow message="Loading saved analysis…" size="sm" />
-          )}
-          {displayAnalysis && savedLabel && !latestQuery.isPending && (
-            <div
-              className="rounded-xl border border-slate-200/80 bg-slate-50/80 px-4 py-3 text-sm text-zenodrift-text"
-              role="status"
-            >
-              <p className="font-medium text-zenodrift-text-strong">Saved analysis</p>
-              <p className="mt-1 text-xs text-zenodrift-text-muted">
-                From {savedLabel}. Re-running uses tokens only if something changed or you
-                add an optional focus below.
-              </p>
-            </div>
-          )}
-          <div className="space-y-2">
-            <label
-              htmlFor="analyze-fit-focus"
-              className="block text-sm font-medium text-zenodrift-text-strong"
-            >
-              Optional focus{" "}
-              <span className="font-normal text-zenodrift-text-muted">
-                (narrows retrieval; leave blank for a full comparison)
-              </span>
-            </label>
-            <textarea
-              id="analyze-fit-focus"
-              value={focusQuestion}
-              onChange={(e) => setFocusQuestion(e.target.value)}
-              rows={3}
-              disabled={fitBusy}
-              placeholder="e.g. Emphasize FP&A, budgeting, and executive reporting…"
-              className="w-full rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-zenodrift-text shadow-sm ring-1 ring-slate-200/60 placeholder-zenodrift-text-muted focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
-            />
-          </div>
-          <button
-            type="button"
-            onClick={handleAnalyze}
-            disabled={fitBusy}
-            className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 disabled:opacity-50"
-          >
-            {fitBusy
-              ? "Working…"
-              : displayAnalysis
-                ? "Refresh analysis"
-                : "Analyze fit"}
-          </button>
-        </>
-      )}
-
-      {fitError && (
-        <div
-          className="rounded-xl bg-red-50/80 px-4 py-3 text-sm text-red-700 shadow-sm ring-1 ring-red-200/50"
-          role="alert"
-        >
-          {fitError}
-        </div>
-      )}
-
-      {displayAnalysis && (
-        <section className="border-t border-slate-200/80 pt-6">
-          <h2 className="mb-4 text-sm font-semibold uppercase tracking-wider text-zenodrift-text-muted">
-            Analysis
-          </h2>
-          <AnalyzeFitDisplay data={displayAnalysis} />
-        </section>
-      )}
-    </div>
-  );
-}
-
-function StudyPlanTab({ documentId }: { documentId: string }) {
-  const [days, setDays] = useState(10);
-  const [focus, setFocus] = useState("");
-  const [error, setError] = useState<string | null>(null);
-  const [plan, setPlan] = useState<StudyPlanResult | null>(null);
-  const mutation = useStudyPlanMutation(documentId);
-
-  const handleGenerate = () => {
-    if (mutation.isPending) return;
-    setError(null);
-    mutation.mutate(
-      { days, focus: focus.trim() || undefined },
-      {
-        onSuccess: (data) => setPlan(data),
-        onError: (err) => {
-          setError(
-            err instanceof ApiError
-              ? String(err.detail || err.message)
-              : "Could not generate study plan"
-          );
-        },
-      }
-    );
-  };
-
-  return (
-    <div className="space-y-6 pb-8">
-      <p className="text-sm leading-relaxed text-zenodrift-text">
-        Generate a role-specific prep plan from this JD. Pick a timeline between{" "}
-        <strong>7 and 14 days</strong>, then get daily topics, drills, and mock
-        interview targets.
-      </p>
-
-      <div className="grid gap-4 sm:grid-cols-[180px_1fr]">
-        <div className="space-y-2">
-          <label
-            htmlFor="study-plan-days"
-            className="block text-sm font-medium text-zenodrift-text-strong"
-          >
-            Plan length
-          </label>
-          <input
-            id="study-plan-days"
-            type="number"
-            min={7}
-            max={14}
-            value={days}
-            onChange={(e) => {
-              const parsed = Number(e.target.value);
-              if (!Number.isFinite(parsed)) return;
-              setDays(Math.max(7, Math.min(14, Math.round(parsed))));
-            }}
-            disabled={mutation.isPending}
-            className="w-full rounded-xl border border-slate-200 bg-white/80 px-3 py-2 text-sm text-zenodrift-text shadow-sm ring-1 ring-slate-200/60 focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
-          />
-        </div>
-        <div className="space-y-2">
-          <label
-            htmlFor="study-plan-focus"
-            className="block text-sm font-medium text-zenodrift-text-strong"
-          >
-            Optional focus{" "}
-            <span className="font-normal text-zenodrift-text-muted">
-              (e.g. system design, leadership stories)
-            </span>
-          </label>
-          <textarea
-            id="study-plan-focus"
-            value={focus}
-            onChange={(e) => setFocus(e.target.value)}
-            rows={3}
-            disabled={mutation.isPending}
-            placeholder="Prioritize architecture and stakeholder communication..."
-            className="w-full rounded-xl border border-slate-200 bg-white/80 px-4 py-3 text-sm text-zenodrift-text shadow-sm ring-1 ring-slate-200/60 placeholder-zenodrift-text-muted focus:border-orange-400 focus:outline-none focus:ring-2 focus:ring-orange-400/20 disabled:opacity-70"
-          />
-        </div>
-      </div>
-
-      <button
-        type="button"
-        onClick={handleGenerate}
-        disabled={mutation.isPending}
-        className="rounded-xl bg-slate-900 px-6 py-3 text-sm font-medium text-white shadow-sm transition-colors hover:bg-slate-800 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2 disabled:opacity-50"
-      >
-        {mutation.isPending
-          ? "Building plan…"
-          : plan
-            ? "Regenerate plan"
-            : "Generate study plan"}
-      </button>
-
-      {error && (
-        <div
-          className="rounded-xl bg-red-50/80 px-4 py-3 text-sm text-red-700 shadow-sm ring-1 ring-red-200/50"
-          role="alert"
-        >
-          {error}
-        </div>
-      )}
-
-      {plan && (
-        <section className="space-y-4 border-t border-slate-200/80 pt-6">
-          <div>
-            <h2 className="text-base font-semibold text-zenodrift-text-strong">
-              {plan.title}
-            </h2>
-            <p className="mt-1 text-sm text-zenodrift-text">
-              {plan.role_title} · {plan.duration_days} days
-            </p>
-            {plan.summary.trim() ? (
-              <p className="mt-2 text-sm leading-relaxed text-zenodrift-text">
-                {plan.summary}
-              </p>
-            ) : null}
-          </div>
-
-          <div className="space-y-3">
-            {plan.daily_plan.map((day) => (
-              <article
-                key={day.day}
-                className="rounded-xl border border-slate-200/80 bg-white/70 px-4 py-3 shadow-sm"
-              >
-                <div className="flex flex-wrap items-center gap-2">
-                  <p className="text-sm font-semibold text-zenodrift-text-strong">
-                    Day {day.day}
-                  </p>
-                  {day.theme.trim() ? (
-                    <span className="rounded-full bg-slate-100 px-2 py-0.5 text-xs text-zenodrift-text">
-                      {day.theme}
-                    </span>
-                  ) : null}
-                </div>
-                {day.topics.length > 0 && (
-                  <p className="mt-2 text-sm text-zenodrift-text">
-                    <span className="font-medium text-zenodrift-text-strong">Topics: </span>
-                    {day.topics.join(", ")}
-                  </p>
-                )}
-                {day.drills.length > 0 && (
-                  <ul className="mt-2 list-disc space-y-1 pl-5 text-sm text-zenodrift-text">
-                    {day.drills.map((drill, idx) => (
-                      <li key={`${day.day}-drill-${idx}`}>{drill}</li>
-                    ))}
-                  </ul>
-                )}
-                {day.mock_target.trim() ? (
-                  <p className="mt-2 rounded-lg bg-amber-50/80 px-3 py-2 text-xs text-amber-950 ring-1 ring-amber-200/70">
-                    <span className="font-semibold uppercase tracking-wide text-amber-900/90">
-                      Mock target
-                    </span>{" "}
-                    {day.mock_target}
-                  </p>
-                ) : null}
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
-    </div>
   );
 }
 

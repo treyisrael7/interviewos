@@ -18,12 +18,6 @@ export function AppHeader() {
             InterviewOS
           </Link>
           <div className="flex items-center gap-3 sm:gap-4">
-            <Link
-              href="/dashboard/analytics"
-              className="text-sm font-medium text-zenodrift-text-muted transition-colors hover:text-zenodrift-accent"
-            >
-              Analytics
-            </Link>
             <button
               type="button"
               onClick={() => setLibraryOpen(true)}

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useState } from "react";
 import { useToast } from "@/components/ui/ToastProvider";
 import { ApiError } from "@/lib/api";
@@ -56,7 +55,7 @@ export function AccountResumeSection() {
   const handleDelete = () => {
     if (
       !confirm(
-        "Remove your profile resume? You can upload again anytime. Ask (on job pages), Analyze fit, and interviews will stop using it until you do."
+        "Remove your profile resume? You can upload again anytime. Ask on job pages and interviews will stop using it until you do."
       )
     )
       return;
@@ -114,9 +113,8 @@ export function AccountResumeSection() {
             </div>
           </div>
           <p className="max-w-xl text-sm leading-relaxed text-zenodrift-text">
-            We use it for <strong className="font-semibold text-zenodrift-text-strong">Analyze fit</strong>,{" "}
-            <strong className="font-semibold text-zenodrift-text-strong">Ask</strong> when you&apos;re on a job
-            page, and <strong className="font-semibold text-zenodrift-text-strong">mock interviews</strong>.
+            We use it for <strong className="font-semibold text-zenodrift-text-strong">mock interviews</strong>{" "}
+            and supporting <strong className="font-semibold text-zenodrift-text-strong">Ask</strong> answers on job pages.
             Upload a new file anytime; it simply replaces the old one.
           </p>
           {hasResume && (
@@ -130,28 +128,6 @@ export function AccountResumeSection() {
             </div>
           )}
         </div>
-      </div>
-
-      <div className="relative mt-4 rounded-xl border border-orange-200/60 bg-white/50 p-4">
-        <h3 className="text-xs font-semibold uppercase tracking-wider text-zenodrift-text-muted">
-          Make your resume stronger
-        </h3>
-        <p className="mt-1 text-xs text-zenodrift-text-muted">
-          Chat about wording, impact, layout, or what&apos;s missing. Everything here is based on your
-          profile resume.
-        </p>
-        {hasResume ? (
-          <Link
-            href="/resume/coach"
-            className="mt-3 inline-flex items-center justify-center rounded-xl bg-neutral-900 px-4 py-2.5 text-sm font-semibold text-white shadow-sm transition-colors hover:bg-neutral-800 focus:outline-none focus:ring-2 focus:ring-orange-400 focus:ring-offset-2"
-          >
-            Open resume coach
-          </Link>
-        ) : (
-          <p className="mt-3 text-sm text-zenodrift-text-muted">
-            Upload a resume below and this unlocks.
-          </p>
-        )}
       </div>
 
       <div className="relative mt-5 space-y-3 border-t border-orange-200/50 pt-5">

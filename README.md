@@ -1,6 +1,6 @@
 # InterviewOS
 
-Upload a job description PDF, add your resume if you want, and get a RAG-powered interview prep tool that actually uses the JD. Ask questions, practice answers, and get feedback that’s grounded in the real requirements—not generic advice.
+Upload a job description PDF and your resume, then practice interview questions with feedback grounded in the actual role requirements. InterviewOS focuses on one core loop: generate role-specific questions, answer them, and get cited feedback that uses the JD and resume instead of generic advice.
 
 Built with Next.js, FastAPI, PostgreSQL + pgvector, and OpenAI. Local dev uses a file-based upload folder; production can use S3.
 
@@ -20,11 +20,11 @@ Run migrations with `make db-migrate` (or `cd apps/api && alembic upgrade head` 
 
 ## What it does
 
-**Job descriptions** – Parses PDFs, detects sections (responsibilities, qualifications, comp, etc.), chunks them sensibly, and stores embeddings so you can query things like “What’s the salary?” or “What skills do they want?”
+**Job descriptions** – Parses JD PDFs, chunks the role requirements, and stores embeddings so interview questions and feedback can cite the source material.
 
-**Interview prep** – Upload one resume on the dashboard and it’s reused for every JD. The system pulls competencies from the job description, generates behavioral and role-specific questions with rubrics, and evaluates your answers using both the JD and your resume. You can also add company notes or URLs per document.
+**Interview practice** – Upload one resume on the dashboard and reuse it across JDs. The system generates behavioral and role-specific questions, then evaluates your answers using evidence from the JD and your resume.
 
-**Ask** – RAG Q&A over your documents with citations.
+**Ask** – A supporting cited Q&A path for checking details in the JD or resume when preparing.
 
 ## Testing with real PDFs
 

@@ -1,16 +1,22 @@
 # InterviewOS Repository Guide
 
-This document explains the `rag-assistant` repository as it exists today. The product is branded as **InterviewOS**: a job-description-grounded interview preparation app that ingests PDFs, builds a retrieval index, and uses LLMs to answer questions, analyze resume fit, generate interview questions, and evaluate practice answers with citations.
+This document explains the `rag-assistant` repository as it exists today. The product is branded as **InterviewOS**: a focused interview-practice app that ingests a job description and resume, builds a retrieval index, generates role-aware interview questions, and evaluates practice answers with cited evidence.
 
 ## 1. Product at a Glance
 
-InterviewOS centers on a job description PDF. A signed-in user uploads a JD, the API extracts and chunks its text, stores embeddings in PostgreSQL with pgvector, and then uses those chunks for several workflows:
+InterviewOS centers on a job description PDF and an account-level resume. A signed-in user uploads both, the API extracts and chunks their text, stores embeddings in PostgreSQL with pgvector, and then uses those chunks for the core interview-practice loop.
 
-- **Document Q&A**: Ask questions against a document and get grounded answers with citations.
-- **Resume fit analysis**: Compare an account-level resume against a JD and produce matches, gaps, score, and recommendations.
-- **Interview practice**: Generate role-aware questions from the JD, collect answers, evaluate them against rubrics and retrieved evidence, and track improvement.
-- **Resume coaching**: Ask questions about the user's uploaded account resume.
+Core scope:
+
+- **Interview practice**: Generate role-aware questions from the JD, collect answers, and evaluate them against rubrics and retrieved JD/resume evidence.
+- **Grounded prep support**: Use cited Q&A over the JD or resume to check details while preparing.
+
+Secondary or deferred surfaces already present in the repo:
+
+- **Resume fit analysis**: Compare a resume against a JD and produce matches, gaps, score, and recommendations.
+- **Study plans and gap analysis**: Generate preparation guidance from retrieved document evidence.
 - **Analytics**: Track interview scores, competency trends, and recent sessions.
+- **Extra kit sources**: Add company or notes sources alongside the JD.
 
 The stack is a monorepo with a Next.js web app, FastAPI backend, PostgreSQL + pgvector database, Alembic migrations, OpenAI embeddings/chat calls, and Docker-based local orchestration.
 
@@ -33,7 +39,7 @@ The stack is a monorepo with a Next.js web app, FastAPI backend, PostgreSQL + pg
 The app has four main runtime components:
 
 - **Web app** in `apps/web`: Next.js 15 and React 19. It handles Clerk auth, page routing, document upload UI, interview UI, dashboards, and API calls.
-- **API app** in `apps/api`: FastAPI service exposing document, retrieval, fit analysis, interview, analytics, and resume endpoints.
+- **API app** in `apps/api`: FastAPI service exposing the core document, resume, retrieval, and interview endpoints, plus secondary fit analysis and analytics endpoints.
 - **Database**: PostgreSQL 16 with pgvector. It stores users, documents, chunks, interview sessions/questions/answers, fit analysis cache rows, and retrieval feedback.
 - **Object storage**: S3 in production when configured; local filesystem storage for development when S3 env vars are absent.
 
@@ -41,10 +47,10 @@ OpenAI is used for:
 
 - Text embeddings during ingestion and query retrieval.
 - Grounded Q&A responses.
-- Fit analysis.
+- Secondary fit analysis.
 - Interview question generation.
 - Interview answer evaluation.
-- Study plans and rubric extraction paths.
+- Rubric extraction, with secondary study-plan and fit-analysis paths.
 
 ## 4. Local Development
 
@@ -137,7 +143,7 @@ Important tables:
 - `documents`: Uploaded PDFs or account resume records. Stores status, storage key, page count, domain, extracted JD structure, role profile, competencies, and rubric JSON.
 - `interview_sources`: Sources attached to a document: JD, resume, company, or notes.
 - `document_chunks`: Chunk text and metadata, embedding vector, generated full-text search vector, section type, quality flags, and source linkage.
-- `interview_sessions`: A generated practice session for one user and one JD, including role profile and adaptive performance profile.
+- `interview_sessions`: A generated practice session for one user and one JD, including role profile and secondary adaptive-performance metadata.
 - `interview_questions`: Generated questions and rubric JSON.
 - `interview_answers`: User answers, scores, structured feedback, and evaluation snapshots.
 - `interview_retrieval_feedback`: User feedback that retrieved evidence missed the mark.
@@ -254,9 +260,9 @@ It returns chunks with:
 
 This is useful for debugging retrieval quality, inspecting section filters, and testing citation behavior.
 
-## 14. Fit Analysis
+## 14. Secondary Fit Analysis
 
-Fit analysis is implemented by `POST /analyze-fit` and `GET /analyze-fit/latest` in `apps/api/app/routers/analyze_fit.py`.
+Fit analysis is a secondary prep surface implemented by `POST /analyze-fit` and `GET /analyze-fit/latest` in `apps/api/app/routers/analyze_fit.py`.
 
 The user supplies a JD document id and a resume document id. The API:
 
@@ -306,7 +312,7 @@ Answer evaluation flow:
 5. Call the evaluation service.
 6. Normalize rubric scores and compute score breakdown.
 7. Store an `interview_answers` row.
-8. Recompute session `performance_profile` for adaptive hints.
+8. Recompute session `performance_profile` for secondary adaptive hints.
 
 Frontend routes:
 
@@ -316,9 +322,9 @@ Frontend routes:
 - `apps/web/src/components/interview/EvaluationDrawer.tsx`: answer feedback display.
 - `apps/web/src/components/interview/ReferenceDrawer.tsx`: evidence/citation display.
 
-## 16. Study Plans, Gap Analysis, and Kit Sources
+## 16. Secondary Prep Surfaces
 
-The documents router is large because it owns the "interview kit" around a JD.
+The documents router is large because it owns several prep surfaces around a JD. These exist in the implementation, but they are not the lean product's primary promise.
 
 Besides CRUD and ingestion, `apps/api/app/routers/documents.py` includes:
 
@@ -337,7 +343,7 @@ The source types are represented by `interview_sources`:
 - `company`
 - `notes`
 
-These sources produce chunks tied to the same document, allowing retrieval and interview prompts to use a richer evidence set than the JD alone.
+These sources produce chunks tied to the same document. They can enrich retrieval, but the core scope should continue to work with just the JD plus the user's account resume.
 
 ## 17. Account Resume
 
@@ -353,7 +359,7 @@ Endpoints:
 
 There is one account resume per user. It is stored as a special `documents` row with `doc_domain = "user_resume"` and is hidden from normal document listings.
 
-The resume is reused across job descriptions for fit analysis and interview evidence. The dashboard's `AccountResumeSection` manages this flow in the frontend.
+The resume is reused across job descriptions for interview evidence and secondary fit analysis. The dashboard's `AccountResumeSection` manages this flow in the frontend.
 
 ## 18. Frontend Architecture
 
@@ -376,8 +382,8 @@ Important app routes:
 - `src/app/sign-in/[[...sign-in]]/page.tsx`: Clerk sign-in.
 - `src/app/sign-up/[[...sign-up]]/page.tsx`: Clerk sign-up.
 - `src/app/dashboard/page.tsx`: main dashboard with JD uploads and account resume.
-- `src/app/dashboard/analytics/page.tsx`: interview analytics dashboard.
-- `src/app/documents/[id]/page.tsx`: document detail page with Ask, Analyze Fit, Study Plan, and Interview tabs.
+- `src/app/dashboard/analytics/page.tsx`: secondary interview analytics dashboard.
+- `src/app/documents/[id]/page.tsx`: document detail page with Interview plus supporting Ask, Analyze Fit, and Study Plan tabs.
 - `src/app/interview/setup/[id]/page.tsx`: session setup.
 - `src/app/interview/session/[sessionId]/page.tsx`: interview session.
 - `src/app/resume/coach/page.tsx`: account resume coaching.
@@ -509,10 +515,12 @@ A typical happy path:
 4. Web calls presign, uploads the PDF, confirms it, then starts ingestion.
 5. API extracts text, chunks it, embeds chunks, infers role profile, stores competencies, and marks the document ready.
 6. User opens the JD detail page.
-7. User asks questions, generates a fit analysis, creates a study plan, or starts interview setup.
+7. User starts interview setup from the ready JD.
 8. Interview generation creates a session and questions grounded in JD evidence.
 9. User answers questions in the session UI.
-10. API retrieves evidence, evaluates answers, stores score and feedback, updates performance profile, and feeds analytics.
+10. API retrieves JD/resume evidence, evaluates answers, and stores feedback.
+
+Supporting flows such as cited Q&A, fit analysis, study plans, and analytics are available in the repo, but should not be treated as the main product path.
 
 ## 25. Where to Start When Changing the Repo
 
@@ -550,9 +558,9 @@ For frontend product changes:
 
 ## 26. Notable Engineering Notes
 
-- The repo has strong separation between HTTP routers and service code, but some routers, especially `documents.py`, are intentionally large because they own complex product workflows.
+- The repo has strong separation between HTTP routers and service code, but some routers, especially `documents.py`, are intentionally large because they own several secondary prep workflows.
 - Retrieval is the most important shared backend subsystem. Many product features depend on chunk payload shape and source metadata.
-- The app has both a per-JD "interview kit" model and an account-level resume model. Do not confuse per-document resume sources with the account resume under `/user/resume`.
+- The app has both per-JD supplemental sources and an account-level resume model. For the lean product path, the account resume under `/user/resume` is the important one.
 - The frontend assumes API identity comes from Clerk tokens. Avoid reintroducing `user_id` fields as trusted client input.
 - Local storage is a development fallback. S3 CORS and presigned PUT behavior matter for production.
 - Rate limiting and cache fallback are process-local when Redis is absent, so multi-instance deployments need shared infrastructure for consistency.

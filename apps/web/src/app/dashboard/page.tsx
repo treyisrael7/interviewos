@@ -85,9 +85,6 @@ export default function DashboardPage() {
     error: documentsError,
   } = useDocuments();
   const { data: resumeStatus } = useUserResume();
-  const canAnalyzeFit = Boolean(
-    resumeStatus?.has_resume && resumeStatus.document_id
-  );
 
   /** Hide profile resume (by id or domain) so it never shows as a job row. */
   const jobDescriptionDocs = useMemo(() => {
@@ -263,12 +260,6 @@ export default function DashboardPage() {
                 Fast practice
               </span>
             </div>
-            <Link
-              href="/dashboard/analytics"
-              className="inline-flex text-sm font-semibold text-zenodrift-accent transition-colors hover:text-zenodrift-accent-hover"
-            >
-              View practice analytics →
-            </Link>
           </div>
 
           {/* Right: glass cards for interactive elements only */}
@@ -494,14 +485,6 @@ export default function DashboardPage() {
                           >
                             Start Interview
                           </Link>
-                          {canAnalyzeFit && (
-                            <Link
-                              href={`/documents/${doc.id}?tab=fit`}
-                              className="inline-flex items-center rounded-lg bg-neutral-100 px-3 py-2 text-sm font-medium text-zenodrift-text transition-all duration-200 hover:bg-neutral-200 focus:outline-none focus:ring-2 focus:ring-neutral-300 focus:ring-offset-2"
-                            >
-                              Analyze fit
-                            </Link>
-                          )}
                         </>
                       ) : (
                         <Link
