@@ -74,6 +74,64 @@ function formatUploadedAt(createdAt: string | undefined): string {
   }
 }
 
+interface JobDescriptionUploadTargetProps {
+  busy: boolean;
+  disabled: boolean;
+  onFileSelect: (e: React.ChangeEvent<HTMLInputElement>) => void;
+}
+
+function JobDescriptionUploadTarget({
+  busy,
+  disabled,
+  onFileSelect,
+}: JobDescriptionUploadTargetProps) {
+  return (
+    <label className="group relative flex cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-orange-200/80 bg-white/60 px-5 py-8 text-center shadow-sm transition-all duration-200 hover:border-zenodrift-accent/60 hover:bg-orange-50/70 focus-within:ring-2 focus-within:ring-zenodrift-accent/25 focus-within:ring-offset-2 sm:min-h-[180px]">
+      <input
+        type="file"
+        accept="application/pdf"
+        onChange={onFileSelect}
+        disabled={disabled}
+        className="sr-only"
+        aria-label="Upload job description PDF"
+      />
+      {busy ? (
+        <div className="flex flex-col items-center gap-3">
+          <LoadingSpinner size="lg" variant="warm" label="Uploading" />
+          <span className="text-sm font-medium text-zenodrift-text-muted">
+            Uploading and starting processing...
+          </span>
+        </div>
+      ) : (
+        <>
+          <div className="rounded-full bg-orange-50 p-4 text-zenodrift-accent shadow-sm transition-all duration-200 group-hover:scale-105 group-hover:bg-white">
+            <svg
+              className="h-10 w-10"
+              fill="none"
+              stroke="currentColor"
+              viewBox="0 0 24 24"
+              aria-hidden
+            >
+              <path
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                strokeWidth={1.5}
+                d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
+              />
+            </svg>
+          </div>
+          <span className="mt-4 text-base font-semibold text-zenodrift-text-strong">
+            Add a job description PDF
+          </span>
+          <span className="mt-1.5 max-w-sm text-sm leading-relaxed text-zenodrift-text-muted">
+            Drop a JD here or click to upload. We will process it here and open setup when it is ready.
+          </span>
+        </>
+      )}
+    </label>
+  );
+}
+
 export default function DashboardPage() {
   const reduceMotion = useReducedMotion();
   const router = useRouter();
@@ -98,6 +156,7 @@ export default function DashboardPage() {
 
   const [error, setError] = useState<string | null>(null);
   const [processingId, setProcessingId] = useState<string | null>(null);
+  const [pendingUploadName, setPendingUploadName] = useState<string | null>(null);
   const [deletingId, setDeletingId] = useState<string | null>(null);
 
   const uploadMutation = useUploadJobDescriptionMutation();
@@ -134,6 +193,7 @@ export default function DashboardPage() {
       return;
     }
     setError(null);
+    setPendingUploadName(file.name);
     uploadMutation.mutate(file, {
       onSuccess: (documentId) => {
         setProcessingId(documentId);
@@ -148,6 +208,7 @@ export default function DashboardPage() {
             ? String(err.detail || err.message)
             : "Upload failed";
         setError(message);
+        setPendingUploadName(null);
         showToast({ tone: "error", message });
       },
     });
@@ -229,10 +290,15 @@ export default function DashboardPage() {
   };
 
   const displayError = error ?? listError;
+  const processingDoc = processingId
+    ? jobDescriptionDocs.find((doc) => doc.id === processingId)
+    : null;
+  const showPendingUploadState =
+    Boolean(pendingUploadName) && (uploadBusy || (Boolean(processingId) && !processingDoc));
 
   return (
     <GradientShell>
-      {/* Hero: product landing style - generous spacing, accent on title, glass for interactive only */}
+      {/* Hero: product landing style - generous spacing, accent on title */}
       <section className="mx-auto w-full max-w-[1160px] pb-6 pt-8 sm:pt-12">
         <div className="grid grid-cols-1 gap-12 lg:grid-cols-[1fr_auto] lg:items-start lg:gap-16">
           {/* Left: product identity - no card, typography + badges */}
@@ -262,53 +328,13 @@ export default function DashboardPage() {
             </div>
           </div>
 
-          {/* Right: glass cards for interactive elements only */}
-          <div className="flex flex-col gap-4">
-            <div className="hero-glass-card overflow-hidden p-6 sm:min-w-[320px] sm:p-8">
-              <label className="group relative flex min-h-[200px] cursor-pointer flex-col items-center justify-center rounded-2xl border-2 border-dashed border-white/40 px-6 py-12 transition-all duration-200 hover:border-zenodrift-accent/50 hover:bg-white/30 focus-within:ring-2 focus-within:ring-zenodrift-accent/25 focus-within:ring-offset-2 focus-within:ring-offset-transparent">
-                <input
-                  type="file"
-                  accept="application/pdf"
-                  onChange={handleFileSelect}
-                  disabled={uploadMutation.isPending}
-                  className="sr-only"
-                  aria-label="Upload PDF file"
-                />
-                {uploadBusy ? (
-                  <div className="flex flex-col items-center gap-4">
-                    <LoadingSpinner size="lg" variant="light" label="Uploading" />
-                    <span className="text-sm font-medium text-zenodrift-text-muted">
-                      Uploading and processing…
-                    </span>
-                  </div>
-                ) : (
-                  <>
-                    <div className="rounded-full bg-white/50 p-5 shadow-sm transition-all duration-200 group-hover:scale-105 group-hover:bg-white/70 group-hover:shadow-md">
-                      <svg
-                        className="h-14 w-14 text-zenodrift-accent"
-                        fill="none"
-                        stroke="currentColor"
-                        viewBox="0 0 24 24"
-                        aria-hidden
-                      >
-                        <path
-                          strokeLinecap="round"
-                          strokeLinejoin="round"
-                          strokeWidth={1.5}
-                          d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12"
-                        />
-                      </svg>
-                    </div>
-                    <span className="mt-5 text-base font-semibold text-zenodrift-text">
-                      Drop a job description PDF or click to upload
-                    </span>
-                    <span className="mt-1.5 text-xs text-zenodrift-text-muted">
-                      PDF only · processed automatically
-                    </span>
-                  </>
-                )}
-              </label>
-            </div>
+          <div className="hero-glass-card flex flex-col gap-3 p-5 sm:min-w-[260px]">
+            <p className="text-sm font-medium text-zenodrift-text-strong">
+              Already uploaded a JD?
+            </p>
+            <p className="text-sm leading-relaxed text-zenodrift-text-muted">
+              Open your library to pick up an existing role or switch interview context.
+            </p>
             <button
               onClick={openLibrary}
               className="rounded-2xl bg-gradient-to-r from-orange-500 to-orange-600 px-6 py-3 text-sm font-semibold text-white shadow-lg transition-all duration-200 hover:-translate-y-0.5 hover:shadow-xl focus:outline-none focus:ring-2 focus:ring-zenodrift-accent focus:ring-offset-2 focus:ring-offset-transparent"
@@ -332,13 +358,16 @@ export default function DashboardPage() {
       {/* Dashboard card: profile resume + job descriptions */}
       <section className="dashboard-card px-6 py-6">
         <AccountResumeSection />
-        <div className="mb-3 mt-8 flex items-center justify-between">
+        <div className="mb-5 mt-8 flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
           <div>
-            <h2 className="text-xs font-medium uppercase tracking-wider text-zenodrift-text-muted">
+            <p className="text-xs font-medium uppercase tracking-wider text-zenodrift-text-muted">
               Job descriptions
+            </p>
+            <h2 className="mt-1 text-2xl font-semibold tracking-tight text-zenodrift-text-strong">
+              Add and manage JDs
             </h2>
-            <p className="mt-1 text-xs text-zenodrift-text-muted">
-              Upload roles here. The profile resume above goes with every job you add.
+            <p className="mt-2 max-w-2xl text-sm leading-relaxed text-zenodrift-text-muted">
+              Upload roles here, watch processing, and start interview setup from the same workspace. The profile resume above goes with every job you add.
             </p>
           </div>
           {jobDescriptionDocs.length > 0 && (
@@ -351,17 +380,48 @@ export default function DashboardPage() {
             </button>
           )}
         </div>
+
+        <div className="mb-5">
+          <JobDescriptionUploadTarget
+            busy={uploadBusy}
+            disabled={uploadMutation.isPending}
+            onFileSelect={handleFileSelect}
+          />
+        </div>
+
+        {showPendingUploadState && pendingUploadName && (
+          <div className="mb-4 flex flex-col gap-3 rounded-2xl border border-indigo-100 bg-indigo-50/70 px-4 py-4 sm:flex-row sm:items-center sm:justify-between">
+            <div className="min-w-0">
+              <p className="truncate text-sm font-semibold text-zenodrift-text-strong">
+                {pendingUploadName}
+              </p>
+              <p className="mt-1 text-sm text-indigo-700">
+                Processing this JD. Setup will open when ready.
+              </p>
+            </div>
+            <div className="flex shrink-0 items-center gap-2 text-sm font-medium text-indigo-700">
+              <LoadingSpinner size="sm" variant="warm" decorative />
+              Processing
+            </div>
+          </div>
+        )}
+
         {documentsLoading ? (
           <div className="py-6">
             <DocumentListSkeleton />
           </div>
         ) : jobDescriptionDocs.length === 0 ? (
-          <p className="py-6 text-center text-sm text-zenodrift-text-muted">
-            No job descriptions yet. Upload a JD PDF in the area above to get started.
-          </p>
+          <div className="rounded-2xl bg-white/40 px-5 py-6 text-center">
+            <p className="text-sm font-medium text-zenodrift-text-strong">
+              No job descriptions yet
+            </p>
+            <p className="mx-auto mt-1 max-w-md text-sm leading-relaxed text-zenodrift-text-muted">
+              Add a JD above and it will show up here with processing status, detected role details, and interview actions.
+            </p>
+          </div>
         ) : (
           <motion.ul
-            className="divide-y divide-neutral-100"
+            className="space-y-3"
             {...(reduceMotion
               ? {}
               : {
@@ -373,7 +433,7 @@ export default function DashboardPage() {
             {jobDescriptionDocs.map((doc) => (
               <li
                 key={doc.id}
-                className="flex flex-col gap-2 py-4 first:pt-0 last:pb-0 sm:flex-row sm:items-center sm:justify-between sm:gap-4"
+                className="flex flex-col gap-4 rounded-2xl border border-white/50 bg-white/55 p-4 shadow-sm sm:flex-row sm:items-center sm:justify-between sm:gap-6"
               >
                 <div className="min-w-0 flex-1">
                   <div className="flex flex-wrap items-center gap-2">
@@ -407,6 +467,26 @@ export default function DashboardPage() {
                       <span>{formatUploadedAt(doc.created_at)}</span>
                     )}
                   </div>
+                  {doc.status === "processing" && (
+                    <p className="mt-2 text-sm text-indigo-700">
+                      Processing this JD. Setup will open when ready.
+                    </p>
+                  )}
+                  {doc.status === "pending" && (
+                    <p className="mt-2 text-sm text-amber-700">
+                      Waiting for upload confirmation.
+                    </p>
+                  )}
+                  {doc.status === "uploaded" && (
+                    <p className="mt-2 text-sm text-blue-700">
+                      Upload complete. Start processing here if it did not begin automatically.
+                    </p>
+                  )}
+                  {doc.status === "failed" && doc.error_message && (
+                    <p className="mt-2 text-sm text-red-600">
+                      {doc.error_message}
+                    </p>
+                  )}
                   {doc.status === "ready" && (doc.role_profile || doc.competencies?.length) && (
                     <div className="mt-2 space-y-1.5">
                       {(doc.role_profile || (doc.coverage_total ?? 0) > 0) && (
@@ -457,7 +537,24 @@ export default function DashboardPage() {
                     </div>
                   )}
                 </div>
-                <div className="flex shrink-0 items-center gap-2">
+                <div className="flex shrink-0 flex-wrap items-center gap-2 sm:justify-end">
+                  {doc.status === "processing" && (
+                    <button
+                      disabled
+                      className="inline-flex items-center gap-2 rounded-lg bg-indigo-100 px-3 py-2 text-sm font-medium text-indigo-700 disabled:opacity-80"
+                    >
+                      <LoadingSpinner size="sm" variant="warm" decorative />
+                      Processing
+                    </button>
+                  )}
+                  {doc.status === "pending" && (
+                    <button
+                      disabled
+                      className="rounded-lg bg-amber-100 px-3 py-2 text-sm font-medium text-amber-700 disabled:opacity-80"
+                    >
+                      Pending
+                    </button>
+                  )}
                   {doc.status === "uploaded" && (
                     <button
                       onClick={() => handleProcess(doc)}
