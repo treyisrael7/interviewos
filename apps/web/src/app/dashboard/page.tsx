@@ -577,6 +577,12 @@ export default function DashboardPage() {
                       {doc.doc_domain === "job_description" ? (
                         <>
                           <Link
+                            href={`/documents/${doc.id}`}
+                            className="inline-flex items-center rounded-lg bg-white/80 px-3 py-2 text-sm font-medium text-zenodrift-text shadow-sm ring-1 ring-neutral-200/80 transition-all duration-200 hover:bg-white hover:text-zenodrift-text-strong focus:outline-none focus:ring-2 focus:ring-zenodrift-accent focus:ring-offset-2"
+                          >
+                            View JD details
+                          </Link>
+                          <Link
                             href={`/interview/setup/${doc.id}`}
                             className="inline-flex items-center rounded-lg bg-zenodrift-accent px-3 py-2 text-sm font-medium text-white shadow-zenodrift-soft transition-all duration-200 hover:bg-zenodrift-accent-hover hover:shadow-md focus:outline-none focus:ring-2 focus:ring-zenodrift-accent focus:ring-offset-2"
                           >
